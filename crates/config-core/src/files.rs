@@ -1,8 +1,8 @@
-use crate::{model::{FileChange, Result}, security};
+use crate::model::{FileChange, Result};
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use sha2::{Digest, Sha256};
 use std::{
-    fs::{self, File},
+    fs::{self, File, OpenOptions},
     io::{Read, Write},
     path::{Path, PathBuf},
 };
@@ -65,7 +65,7 @@ pub fn read(path: &Path) -> Result<Option<(Vec<u8>, String)>> {
         return Err(format!("目标不是普通文件，拒绝读取或覆盖：{}", path.display()));
     }
     if metadata.len() > MAX_BYTES {
-        return Err(format!("文件超过 4 MiB 安全上限：{}", path.display()));
+        return Err(format!("文件超过 4 MiB 支持上限：{}", path.display()));
     }
     let mut file = File::open(path).map_err(|e| format!("无法读取 {}：{e}", path.display()))?;
     let file_identity = identity(&file, path)?;
@@ -177,7 +177,7 @@ pub fn verify(change: &FileChange) -> Result<()> {
     if current.as_ref().map(|(b, _)| pack(b)) != change.before
         || current.as_ref().map(|(_, identity)| identity.clone()) != change.before_identity
     {
-        return Err(format!("文件在预览后被外部修改或替换，请重新载入：{}", change.path.display()));
+        return Err(format!("文件在生成操作计划后被外部修改或替换，请重新载入：{}", change.path.display()));
     }
     Ok(())
 }
@@ -198,7 +198,9 @@ pub fn replace_tracked(
         let stage: PathBuf = parent.join(format!(".cli-panel-{}.tmp", uuid::Uuid::new_v4()));
         let mut owned_identity = None;
         let result = (|| {
-            let mut file = security::create_private(&stage)?;
+            // 保留独占新建与原子发布，文件权限按所在目录正常继承。
+            let mut file = OpenOptions::new().read(true).write(true).create_new(true).open(&stage)
+                .map_err(|e| format!("无法创建临时文件：{e}"))?;
             owned_identity = Some(identity(&file, &stage)?);
             on_created(&file)?;
             file.write_all(bytes).and_then(|_| file.sync_all()).map_err(|e| e.to_string())?;
@@ -212,7 +214,7 @@ pub fn replace_tracked(
                         return Err(format!("临时路径身份发生变化，拒绝清理碰撞文件：{}", stage.display()));
                     }
                     fs::remove_file(&stage).map_err(|cleanup| {
-                        format!("写入失败且私有临时文件无法清理：{}；{cleanup}", stage.display())
+                        format!("写入失败且临时文件无法清理：{}；{cleanup}", stage.display())
                     })?;
                 }
             }

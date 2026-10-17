@@ -7,3 +7,23 @@ src-tauri/target/
 *.log
 *.local
 src-tauri/icons/icon.ico
+
+# 云端下载产物以及不应提交的个人配置、凭据与备份。
+/artifacts/
+.env
+.env.*
+!.env.example
+config.*.toml
+settings.*.json
+auth.json
+Microsoft.PowerShell_profile.ps1
+*.sqlite
+*.sqlite3
+*.sqlite3-*
+*.db
+*.db-*
+*.bak
+*.backup
+*.pfx
+*.p12
+backups/

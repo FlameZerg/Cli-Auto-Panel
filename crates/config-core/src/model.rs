@@ -112,7 +112,6 @@ pub enum Change {
         name: String,
         content: String,
         template_id: Option<String>,
-        credentials_confirmed: bool,
     },
     RemoveAlias { name: String },
     DeleteConfig { id: String, expected_hash: String },

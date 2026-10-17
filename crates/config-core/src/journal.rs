@@ -116,7 +116,7 @@ pub fn backup(directory: &Path, id: &str) -> Result<ApplyPlan> {
 
 fn write_pending(directory: &Path, plan: &ApplyPlan) -> Result<()> {
     let bytes = serde_json::to_vec(plan).map_err(|e| e.to_string())?;
-    if bytes.len() > 256 * 1024 * 1024 { return Err("单次操作的恢复记录超过安全上限，请缩小操作范围。".into()); }
+    if bytes.len() > 256 * 1024 * 1024 { return Err("单次操作的恢复记录超过支持上限，请缩小操作范围。".into()); }
     let stage = directory.join(format!(".pending-{}.tmp", uuid::Uuid::new_v4()));
     let mut owned_identity = None;
     let result: Result<()> = (|| {
@@ -202,7 +202,7 @@ pub fn commit(directory: &Path, store: &mut Store, plan: &ApplyPlan) -> Result<(
     if pending(directory) { return Err("请先恢复未完成的操作。".into()); }
     if serde_json::to_value(store.load()?).map_err(|e| e.to_string())?
         != serde_json::to_value(&plan.before_state).map_err(|e| e.to_string())? {
-        return Err("面板版本已变化，请重新预览。".into());
+        return Err("面板版本已变化，请重新生成操作计划。".into());
     }
     for change in &plan.files { files::verify(change)?; }
     write_pending(directory, plan)?;

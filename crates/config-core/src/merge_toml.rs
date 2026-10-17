@@ -2,44 +2,37 @@ use crate::model::Result;
 use toml_edit::{DocumentMut, Item, TableLike, Value};
 
 pub fn parse(text: &str) -> Result<DocumentMut> {
-    let doc = text.parse::<DocumentMut>().map_err(|e| {
-        let offset = e.span().map(|s| s.start).unwrap_or(0).min(text.len());
-        let line = text.as_bytes()[..offset].iter().filter(|b| **b == b'\n').count() + 1;
-        format!("TOML 格式或重复键校验失败：第 {line} 行附近。")
-    })?;
-    check_keys(doc.as_table(), 0)?;
+    let doc = text.parse::<DocumentMut>().map_err(|error| format!("TOML 解析失败：{error}"))?;
+    check_table_depth(doc.as_table(), 0)?;
     Ok(doc)
 }
 
-fn check_keys(table: &dyn TableLike, depth: usize) -> Result<()> {
+fn check_table_depth(table: &dyn TableLike, depth: usize) -> Result<()> {
     if depth > 64 {
         return Err("TOML 嵌套超过 64 层，已停止处理。".into());
     }
-    for (key, item) in table.iter() {
-        if matches!(key, "__proto__" | "constructor" | "prototype") {
-            return Err("TOML 包含禁止的合并键。".into());
-        }
+    for (_, item) in table.iter() {
         if let Some(child) = item.as_table_like() {
-            check_keys(child, depth + 1)?;
+            check_table_depth(child, depth + 1)?;
         }
         if let Some(tables) = item.as_array_of_tables() {
             for child in tables.iter() {
-                check_keys(child, depth + 1)?;
+                check_table_depth(child, depth + 1)?;
             }
         }
         if let Some(Value::Array(values)) = item.as_value() {
-            for value in values.iter() { check_value(value, depth + 1)?; }
+            for value in values.iter() { check_value_depth(value, depth + 1)?; }
         }
     }
     Ok(())
 }
 
-fn check_value(value: &Value, depth: usize) -> Result<()> {
+fn check_value_depth(value: &Value, depth: usize) -> Result<()> {
     if depth > 64 { return Err("TOML 值嵌套超过 64 层，已停止处理。".into()); }
     match value {
-        Value::InlineTable(table) => check_keys(table, depth + 1),
+        Value::InlineTable(table) => check_table_depth(table, depth + 1),
         Value::Array(values) => {
-            for value in values.iter() { check_value(value, depth + 1)?; }
+            for value in values.iter() { check_value_depth(value, depth + 1)?; }
             Ok(())
         }
         _ => Ok(()),

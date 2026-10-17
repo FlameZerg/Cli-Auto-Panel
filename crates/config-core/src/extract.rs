@@ -1,7 +1,7 @@
 use crate::{merge_json, merge_toml, model::{Extraction, Kind, Result}};
 use serde_json::Value;
 
-pub fn sensitive(name: &str) -> bool {
+fn account_specific_key(name: &str) -> bool {
     let upper = name.to_ascii_uppercase().replace('-', "_");
     let suffixes = ["_KEY", "_KEY_ID", "_APIKEY", "_ACCESSKEY", "_SECRETKEY", "_APITOKEN",
         "_TOKEN", "_PAT", "_PWD", "_PASS", "_PASSPHRASE", "_CREDS"];
@@ -18,7 +18,7 @@ fn scrub_json(value: &mut Value, prefix: &str, excluded: &mut Vec<String>) {
             let keys: Vec<String> = map.keys().cloned().collect();
             for key in keys {
                 let path = if prefix.is_empty() { key.clone() } else { format!("{prefix}.{key}") };
-                if sensitive(&key) {
+                if account_specific_key(&key) {
                     map.remove(&key);
                     excluded.push(path);
                 } else if let Some(value) = map.get_mut(&key) {
@@ -39,7 +39,7 @@ fn scrub_toml(table: &mut dyn toml_edit::TableLike, prefix: &str, excluded: &mut
     let keys: Vec<String> = table.iter().map(|(k, _)| k.to_owned()).collect();
     for key in keys {
         let path = if prefix.is_empty() { key.clone() } else { format!("{prefix}.{key}") };
-        if sensitive(&key) {
+        if account_specific_key(&key) {
             table.remove(&key);
             excluded.push(path);
         } else if let Some(item) = table.get_mut(&key) {
@@ -91,7 +91,7 @@ pub fn extract(kind: Kind, content: &str) -> Result<Extraction> {
                     if map.remove(key).is_some() { excluded.push(key.into()); }
                 }
             }
-            // 比参考提取更保守地检查嵌套凭据，排除项在界面逐项展示，不静默处理。
+            // 提取时排除账号专属连接字段，避免公共片段改变其他别名的账号。
             scrub_json(&mut config, "", &mut excluded);
             if config.get("env").and_then(Value::as_object).is_some_and(|m| m.is_empty()) {
                 config.as_object_mut().ok_or("配置根节点无效。")?.remove("env");
@@ -119,17 +119,4 @@ pub fn extract(kind: Kind, content: &str) -> Result<Extraction> {
         }
     };
     Ok(Extraction { content, excluded })
-}
-
-pub fn risk_notices(kind: Kind, content: &str) -> Result<Vec<String>> {
-    if content.trim().is_empty() { return Ok(Vec::new()); }
-    let extraction = extract(kind, content)?;
-    let mut notices = Vec::new();
-    if !extraction.excluded.is_empty() {
-        notices.push(format!("片段包含凭据、供应商、模型或路由等专属内容，应用前请核对：{}。", extraction.excluded.join("、")));
-    }
-    if content.contains("hooks") || content.contains("permissions") || content.contains("mcp_servers") {
-        notices.push("片段涉及 Hook、权限或 MCP；这些设置可能改变命令执行、授权或联网行为。".into());
-    }
-    Ok(notices)
 }

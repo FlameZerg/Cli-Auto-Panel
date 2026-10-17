@@ -7,19 +7,17 @@ interface Props {
   kind: Kind;
   data: Bootstrap;
   disabled: boolean;
-  onPrepare: (change: Change) => void;
+  onSubmit: (change: Change) => void;
   onDirty: () => void;
   onError: (error: unknown) => void;
 }
 
-export function CreateAliasForm({ kind, data, disabled, onPrepare, onDirty, onError }: Props) {
+export function CreateAliasForm({ kind, data, disabled, onSubmit, onDirty, onError }: Props) {
   const [name, setName] = useState("");
   const [launcher, setLauncher] = useState(kind === "codex" ? "codex" : "claude");
   const [templateId, setTemplateId] = useState("");
   const [content, setContent] = useState(kind === "codex" ? "" : "{}\n");
   const [sourceId, setSourceId] = useState("");
-  const [copyApproved, setCopyApproved] = useState(false);
-  const [confirmed, setConfirmed] = useState(false);
   const [copying, setCopying] = useState(false);
   const copySequence = useRef(0);
   useEffect(() => () => { copySequence.current += 1; }, []);
@@ -27,14 +25,13 @@ export function CreateAliasForm({ kind, data, disabled, onPrepare, onDirty, onEr
   const entries = data.inventory.configs.filter((c) => c.kind === kind && !c.error);
   const change = (action: () => void) => { onDirty(); action(); };
   async function copySource() {
-    if (!sourceId || !copyApproved || disabled) return;
+    if (!sourceId || disabled || copying) return;
     const sequence = ++copySequence.current;
     setCopying(true);
     try {
       const document = await api.readConfig(sourceId);
       if (sequence === copySequence.current) {
         setContent(document.content);
-        setConfirmed(false);
         onDirty();
       }
     } catch (error) { if (sequence === copySequence.current) onError(error); }
@@ -58,24 +55,20 @@ export function CreateAliasForm({ kind, data, disabled, onPrepare, onDirty, onEr
       </div>
       <div className="notice">将创建 {kind === "codex" ? `E:\\.codex\\ccs\\config.${name || "<名称>"}.toml` : `E:\\.claude\\settings.${name || "<名称>"}.json`}。
         {launcher === "both" && " 两个命令共享同一份配置和模板绑定。"}</div>
-      <details className="copy-source">
-        <summary>可选：从已有配置复制（包含凭据，默认不复制）</summary>
+      <section className="copy-source">
+        <h3>从已有配置复制</h3>
         <select value={sourceId} disabled={disabled || copying} onChange={(e) => setSourceId(e.target.value)}>
           <option value="">选择已有文件</option>{entries.map((c) => <option key={c.id} value={c.id}>{c.aliases.join(" / ") || c.path}</option>)}
         </select>
-        <label className="check"><input type="checkbox" checked={copyApproved} onChange={(e) => setCopyApproved(e.target.checked)} />
-          我明确允许把此文件的完整内容和凭据复制到新草稿</label>
-        <button disabled={disabled || copying || !sourceId || !copyApproved} onClick={() => void copySource()}>
+        <button disabled={disabled || copying || !sourceId} onClick={() => void copySource()}>
           {copying ? "读取中…" : "复制到草稿"}</button>
-      </details>
-      <label>个别配置原文（此编辑器为明文）</label>
+      </section>
+      <label>个别配置原文</label>
       <CodeEditor value={content} kind={kind} readOnly={disabled || copying}
         onChange={(value) => change(() => setContent(value))} />
-      <label className="check"><input type="checkbox" checked={confirmed} disabled={disabled || copying}
-        onChange={(e) => setConfirmed(e.target.checked)} />已核对本配置中的账号、模型、路由及凭据，允许写入新文件</label>
-      <button className="primary" disabled={disabled || copying || !name.trim() || !confirmed}
-        onClick={() => onPrepare({ type: "createAlias", kind, launcher, name: name.trim(), content,
-          templateId: templateId || null, credentialsConfirmed: confirmed })}>预览新建与注册</button>
+      <button className="primary" disabled={disabled || copying || !name.trim()}
+        onClick={() => onSubmit({ type: "createAlias", kind, launcher, name: name.trim(), content,
+          templateId: templateId || null })}>新建文件并注册别名</button>
     </div>
   );
 }

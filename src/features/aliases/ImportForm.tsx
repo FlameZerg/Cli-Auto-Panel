@@ -1,8 +1,8 @@
 import { useState } from "react";
 import type { Change, Kind } from "../../types";
 
-export function ImportForm({ kind, disabled, onPrepare, onDirty }: {
-  kind: Kind; disabled: boolean; onPrepare: (change: Change) => void; onDirty: () => void;
+export function ImportForm({ kind, disabled, onSubmit, onDirty }: {
+  kind: Kind; disabled: boolean; onSubmit: (change: Change) => void; onDirty: () => void;
 }) {
   const [path, setPath] = useState("");
   return <div className="form-section">
@@ -12,6 +12,6 @@ export function ImportForm({ kind, disabled, onPrepare, onDirty }: {
       默认配置、认证文件和运行时副本不在管理范围内。</p>
     <label>文件绝对路径<input value={path} disabled={disabled} onChange={(e) => { setPath(e.target.value); onDirty(); }} /></label>
     <button className="primary" disabled={disabled || !path.trim()}
-      onClick={() => onPrepare({ type: "importConfig", kind, path: path.trim() })}>预览导入</button>
+      onClick={() => onSubmit({ type: "importConfig", kind, path: path.trim() })}>导入配置</button>
   </div>;
 }

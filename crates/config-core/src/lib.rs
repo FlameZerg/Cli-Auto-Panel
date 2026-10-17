@@ -11,7 +11,6 @@ mod planner;
 mod powershell;
 mod profile_editor;
 mod repository;
-mod security;
 
 use model::*;
 use std::path::{Path, PathBuf};
@@ -85,11 +84,11 @@ impl Engine {
         let hash = files::hash(&bytes);
         let mut notices = Vec::new();
         if let Err(error) = planner::validate(entry.kind, &content) {
-            notices.push(format!("{error} 可在明文编辑器中修复后重新保存。"));
+            notices.push(format!("{error} 可在编辑器中修复后重新保存。"));
         }
         if let Some(binding) = state.bindings.iter().find(|b| b.config_id == id) {
             if binding.last_hash != hash {
-                notices.push("文件已被外部修改；本次重新载入后保存表示你确认以当前文件为新基线，不会反向修改公共模板。".into());
+                notices.push("文件已被外部修改；重新载入后保存将以当前文件为基线，不会反向修改公共模板。".into());
             }
         }
         if entry.kind == Kind::Codex {
@@ -135,18 +134,19 @@ impl Engine {
         let inventory = discovery::inventory(&self.paths, &ast, &state);
         let plan = planner::prepare(&self.paths, state, &inventory, &ast, &profile_hash, request)?;
         self.validate_plan_paths(&plan)?;
+        // 差异生成失败时不保留可提交计划，避免失败请求遗留有效写入入口。
+        let preview = self.preview(&plan)?;
         self.preview = Some(plan);
-        self.preview(false)
+        Ok(preview)
     }
 
-    pub fn preview(&self, show_secrets: bool) -> Result<Preview> {
-        let plan = self.preview.as_ref().ok_or("操作预览不存在或已失效。")?;
+    fn preview(&self, plan: &ApplyPlan) -> Result<Preview> {
         let mut files = Vec::new();
         for change in &plan.files {
             if change.before == change.after { continue; }
-            let before = change.before.as_deref().map(|b| self.preview_text(b, &change.path, show_secrets))
+            let before = change.before.as_deref().map(|b| self.preview_text(b, &change.path))
                 .transpose()?.unwrap_or_default();
-            let after = change.after.as_deref().map(|b| self.preview_text(b, &change.path, show_secrets))
+            let after = change.after.as_deref().map(|b| self.preview_text(b, &change.path))
                 .transpose()?.unwrap_or_default();
             files.push(PreviewFile {
                 path: change.path.to_string_lossy().into(),
@@ -159,20 +159,26 @@ impl Engine {
         for next in &plan.after_state.templates {
             let old = plan.before_state.templates.iter().find(|t| t.id == next.id);
             if old.is_some_and(|t| t.content == next.content && t.name == next.name) { continue; }
-            let display = |s: &str| if show_secrets { s.into() } else { hidden(s) };
             files.push(PreviewFile {
                 path: format!("通用配置库 / {}", next.name), action: "元数据".into(),
-                before: display(old.map(|t| t.content.as_str()).unwrap_or("")),
-                after: display(&next.content),
+                before: old.map(|t| t.content.clone()).unwrap_or_default(),
+                after: next.content.clone(),
+            });
+        }
+        // 模板删除及撤销新建模板也需要展示被移除的内容，不能显示为空差异。
+        for old in &plan.before_state.templates {
+            if plan.after_state.templates.iter().any(|t| t.id == old.id) { continue; }
+            files.push(PreviewFile {
+                path: format!("通用配置库 / {}", old.name), action: "删除模板".into(),
+                before: old.content.clone(), after: String::new(),
             });
         }
         Ok(Preview { id: plan.id.clone(), label: plan.label.clone(), files, notices: plan.notices.clone() })
     }
 
-    fn preview_text(&self, encoded: &str, path: &Path, reveal: bool) -> Result<String> {
+    fn preview_text(&self, encoded: &str, path: &Path) -> Result<String> {
         let bytes = files::unpack(encoded)?;
-        let text = files::Text::decode(&bytes, path == self.paths.profile)?.value;
-        Ok(if reveal { text } else { hidden(&text) })
+        Ok(files::Text::decode(&bytes, path == self.paths.profile)?.value)
     }
 
     fn validate_plan_paths(&self, plan: &ApplyPlan) -> Result<()> {
@@ -201,8 +207,8 @@ impl Engine {
     }
 
     pub fn commit(&mut self, id: &str) -> Result<Bootstrap> {
-        let plan = self.preview.take().ok_or("没有可以提交的操作预览。")?;
-        if plan.id != id { return Err("预览编号已过期，请重新预览。".into()); }
+        let plan = self.preview.take().ok_or("没有可以提交的操作计划。")?;
+        if plan.id != id { return Err("操作编号已过期，请重新保存。".into()); }
         self.validate_plan_paths(&plan)?;
         journal::commit(&self.paths.data, &mut self.store, &plan)?;
         self.ast_cache = None;
@@ -216,12 +222,5 @@ impl Engine {
         journal::recover(&self.paths.data, &mut self.store)?;
         self.ast_cache = None;
         self.bootstrap()
-    }
-}
-
-fn hidden(text: &str) -> String {
-    if text.is_empty() { String::new() } else {
-        format!("内容默认隐藏，共 {} 字符、{} 行。请显式勾选“显示明文”后查看差异；内容可能包含密钥。",
-            text.chars().count(), text.lines().count())
     }
 }

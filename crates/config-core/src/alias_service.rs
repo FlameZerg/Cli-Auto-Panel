@@ -49,7 +49,8 @@ pub fn create(
     plan.files.push(files::capture(&path, Some(content.as_bytes().to_vec()))?);
     plan_profile(paths, plan, &updated)?;
     plan.files.sort_by_key(|f| f.path == paths.profile);
-    plan.notices.push(format!("将新建并注册：{}。默认不复制其他账户的凭据。", command_names.join("、")));
+    // 新建内容来自完整草稿及模板合并，不再暗示复制过程会过滤凭据。
+    plan.notices.push(format!("将新建并注册：{}。配置内容以草稿及所选通用配置的合并结果为准。", command_names.join("、")));
     Ok(discovery::key(&path))
 }
 
@@ -86,7 +87,7 @@ pub fn delete_config(
         discovery::managed_path(paths, Path::new(&i.path), i.kind)
             .map(|p| discovery::key(&p) != entry.id).unwrap_or(true)
     });
-    plan.notices.push(format!("原路径中的文件将真实删除，并移除 {} 个关联别名：{}。私有备份可用于恢复。未经 profile 声明的外部引用无法自动发现。",
+    plan.notices.push(format!("原路径中的文件将真实删除，并移除 {} 个关联别名：{}。备份可用于恢复。未经 profile 声明的外部引用无法自动发现。",
         aliases.len(), aliases.iter().map(|a| a.name.as_str()).collect::<Vec<_>>().join("、")));
     Ok(())
 }

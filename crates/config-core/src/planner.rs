@@ -1,5 +1,5 @@
 use crate::{
-    alias_service, compatibility, discovery, extract,
+    alias_service, compatibility, discovery,
     files::{self, Text}, journal, merge_json, merge_toml,
     model::*,
 };
@@ -41,7 +41,7 @@ fn template<'a>(state: &'a PanelState, id: &str, kind: Kind) -> Result<&'a Templ
 fn add_guard(plan: &mut ApplyPlan, guard: FileChange) -> Result<()> {
     if let Some(existing) = plan.files.iter().find(|f| f.path == guard.path) {
         if existing.before != guard.before || existing.before_identity != guard.before_identity {
-            return Err("准备过程中基础文件发生变化，请重新预览。".into());
+            return Err("准备过程中基础文件发生变化，请重新保存。".into());
         }
     } else {
         plan.files.push(guard);
@@ -107,7 +107,6 @@ fn save_config(
     plan.label = "保存配置及模板绑定".into();
     plan.notices.push("取消应用只剥离与旧片段匹配的内容，不自动恢复以前被覆盖的值；恢复原值请使用备份。".into());
     plan.notices.push("数组剥离按后端结构子集匹配：匹配的对象条目整体移除，额外独立条目保留；请核对明文差异。".into());
-    if let Some(t) = selected { plan.notices.extend(extract::risk_notices(t.kind, &t.content)?); }
     Ok(())
 }
 
@@ -145,7 +144,7 @@ fn save_template(
         let entry = config(inventory, &binding.config_id)?;
         if let Some(error) = &entry.error { return Err(error.clone()); }
         if entry.hash.as_deref() != Some(binding.last_hash.as_str()) {
-            return Err(format!("绑定文件被外部修改、丢失或出现身份风险，请先打开并确认保存后再同步：{}", entry.path));
+            return Err(format!("绑定文件被外部修改、丢失或替换，请先打开并保存后再同步：{}", entry.path));
         }
         let path = discovery::managed_path(paths, Path::new(&entry.path), kind)?;
         let mut change = files::capture(&path, None)?;
@@ -163,7 +162,6 @@ fn save_template(
         plan.files.push(change);
     }
     plan.label = format!("保存通用配置「{}」并同步绑定文件", next.name);
-    plan.notices.extend(extract::risk_notices(kind, &content)?);
     plan.notices.push("更新片段会先剥离旧片段，再应用新版；数组中的匹配对象条目按结构子集匹配并整体移除。".into());
     if content.trim().is_empty() {
         plan.notices.push("此模板已显式清空；保留引用但不自动重新提取，旧匹配片段将从绑定文件剥离。".into());
@@ -174,20 +172,15 @@ fn save_template(
 fn create_alias(
     paths: &Paths, ast: &AstResult, profile: &str, inventory: &Inventory, plan: &mut ApplyPlan,
     kind: Kind, launcher: &str, name: &str, content: &str, template_id: Option<&str>,
-    credentials_confirmed: bool,
 ) -> Result<()> {
     validate(kind, content)?;
     let selected = template_id.map(|id| template(&plan.after_state, id, kind).cloned()).transpose()?;
     let output = match &selected { Some(t) => apply(kind, content, &t.content)?, None => content.into() };
-    if !extract::extract(kind, &output)?.excluded.is_empty() && !credentials_confirmed {
-        return Err("新配置包含模型、路由或凭据等专属字段，请在向导中确认已核对账户和凭据。".into());
-    }
     check_output(paths, plan, kind, &output)?;
     let id = alias_service::create(paths, plan, ast, profile, kind, launcher, name, &output)?;
     if inventory.configs.iter().any(|c| c.id == id) { return Err("配置目标已在管理清单中。".into()); }
     replace_binding(plan, &id, selected.as_ref(), files::hash(output.as_bytes()));
     plan.label = "新建配置文件并注册别名".into();
-    plan.notices.extend(extract::risk_notices(kind, &output)?);
     Ok(())
 }
 
@@ -240,9 +233,9 @@ pub fn prepare(
             save_template(paths, inventory, &mut plan, id, name, kind, content)?,
         Change::SaveConfig { id, content, template_id, expected_hash } =>
             save_config(paths, inventory, &mut plan, &id, &content, template_id.as_deref(), &expected_hash)?,
-        Change::CreateAlias { kind, launcher, name, content, template_id, credentials_confirmed } =>
+        Change::CreateAlias { kind, launcher, name, content, template_id } =>
             create_alias(paths, ast, &profile.value, inventory, &mut plan, kind, &launcher, &name,
-                &content, template_id.as_deref(), credentials_confirmed)?,
+                &content, template_id.as_deref())?,
         Change::DeleteTemplate { id } => {
             let target = plan.after_state.templates.iter().find(|t| t.id == id).ok_or("模板不存在。")?;
             plan.label = format!("删除通用配置「{}」", target.name);

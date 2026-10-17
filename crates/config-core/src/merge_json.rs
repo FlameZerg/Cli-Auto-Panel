@@ -6,7 +6,7 @@ use std::fmt;
 
 struct StrictValue(Value);
 
-// 同时拒绝重复键和原型污染键，避免解析器或前后端采用不同的解释。
+// 重复键会使覆盖结果含糊，解析时保留这项格式检查。
 impl<'de> Deserialize<'de> for StrictValue {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
         struct JsonVisitor;
@@ -48,11 +48,8 @@ impl<'de> Deserialize<'de> for StrictValue {
             fn visit_map<A: MapAccess<'de>>(self, mut a: A) -> std::result::Result<Self::Value, A::Error> {
                 let mut values = Map::new();
                 while let Some(key) = a.next_key::<String>()? {
-                    if matches!(key.as_str(), "__proto__" | "constructor" | "prototype") {
-                        return Err(de::Error::custom("配置包含禁止的合并键"));
-                    }
                     if values.contains_key(&key) {
-                        return Err(de::Error::custom("配置包含重复键"));
+                        return Err(de::Error::custom(format!("配置包含重复键：{key}")));
                     }
                     values.insert(key, a.next_value::<StrictValue>()?.0);
                 }
@@ -67,7 +64,7 @@ pub fn parse(text: &str) -> Result<Value> {
     let mut deserializer = serde_json::Deserializer::from_str(text);
     let result = StrictValue::deserialize(&mut deserializer)
         .and_then(|value| deserializer.end().map(|_| value.0))
-        .map_err(|e| format!("JSON 格式、重复键或安全键校验失败：第 {} 行，第 {} 列。", e.line(), e.column()))?;
+        .map_err(|error| format!("JSON 解析失败：{error}"))?;
     if !result.is_object() {
         return Err("Claude 配置与通用配置必须是 JSON 对象。".into());
     }

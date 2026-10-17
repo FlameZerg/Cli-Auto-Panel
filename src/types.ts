@@ -58,7 +58,7 @@ export type Change =
   | { type: "saveConfig"; id: string; content: string; templateId: string | null; expectedHash: string }
   | {
       type: "createAlias"; kind: Kind; launcher: string; name: string; content: string;
-      templateId: string | null; credentialsConfirmed: boolean;
+      templateId: string | null;
     }
   | { type: "removeAlias"; name: string }
   | { type: "deleteConfig"; id: string; expectedHash: string }

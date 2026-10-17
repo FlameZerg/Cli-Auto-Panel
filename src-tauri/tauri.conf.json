@@ -20,19 +20,12 @@
         "minHeight": 700,
         "center": true
       }
-    ],
-    "security": {
-      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src ipc: http://ipc.localhost; img-src 'self' data:; object-src 'none'; frame-src 'none'; base-uri 'none'",
-      "devCsp": "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src ipc: http://ipc.localhost http://127.0.0.1:1420 ws://127.0.0.1:1420; img-src 'self' data:; object-src 'none'; frame-src 'none'; base-uri 'none'"
-    }
+    ]
   },
   "bundle": {
     "active": true,
     "targets": ["nsis"],
     "icon": ["icons/icon.ico"],
-    "resources": {
-      "../LICENSES/cc-switch-MIT.txt": "licenses/cc-switch-MIT.txt"
-    },
     "windows": {
       "nsis": { "installMode": "currentUser" },
       "webviewInstallMode": { "type": "downloadBootstrapper" }

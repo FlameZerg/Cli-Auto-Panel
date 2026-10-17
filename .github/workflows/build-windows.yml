@@ -1,0 +1,68 @@
+name: 手动构建 Windows EXE
+
+# 仅由用户点击触发；提交代码不会自动编译或启动应用。
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-exe-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Windows x64 EXE
+    runs-on: windows-2022
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      RUSTUP_TOOLCHAIN: stable-x86_64-pc-windows-msvc
+      CARGO_TERM_COLOR: always
+
+    steps:
+      # 固定已核对的提交，避免可移动版本标签导致构建步骤被静默替换。
+      - name: 签出源码
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: 准备 Node.js 和 npm 缓存
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: 准备云端 MSVC Rust 工具链
+        run: rustup toolchain install stable-x86_64-pc-windows-msvc --profile minimal --no-self-update
+
+      - name: 恢复 Rust 构建缓存
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: "src-tauri -> target"
+          cache-workspace-crates: "true"
+          cache-bin: "false"
+
+      - name: 安装锁定的前端依赖
+        run: npm ci
+
+      - name: 构建 EXE，不生成安装包或启动程序
+        run: npm run build -- --no-bundle
+
+      - name: 整理可下载文件
+        run: |
+          New-Item -ItemType Directory -Path artifacts -Force | Out-Null
+          Copy-Item -LiteralPath src-tauri/target/release/cli-auto-panel.exe -Destination artifacts/cli-auto-panel.exe -ErrorAction Stop
+
+      - name: 上传 EXE
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: cli-auto-panel-windows-x64
+          path: artifacts/
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 1

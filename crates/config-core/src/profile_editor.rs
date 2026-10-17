@@ -11,7 +11,7 @@ const END: &str = "# <<< CLI 通用配置面板管理的别名";
 pub fn parse(text: &str) -> Result<AstResult> {
     let result = powershell::helper(&serde_json::json!({ "action": "parse", "text": text }))
         .map_err(|e| format!("无法解析 profile 语法结构：{e}"))?;
-    serde_json::from_value(result).map_err(|_| "profile 语法结构返回不完整。".into())
+    serde_json::from_value(result).map_err(|error| format!("profile 语法结构解析失败：{error}"))
 }
 
 pub fn read(path: &Path) -> Result<(Text, Vec<u8>, String)> {

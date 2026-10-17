@@ -1,27 +1,24 @@
 $ErrorActionPreference = 'Stop'
-[Console]::InputEncoding = [System.Text.UTF8Encoding]::new($false)
-[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+$panelStage = 'initialize_io'
+$panelAction = 'unknown'
+$panelReader = $null
+$panelWriter = $null
+$panelErrorWriter = $null
 
+# 此模块只解析 profile；标准输入输出直接使用 UTF-8 管道。
 try {
-    $request = [Console]::In.ReadToEnd() | ConvertFrom-Json
-    if ($request.action -eq 'secureDirectory') {
-        # 在存放任何配置备份前关闭权限继承，仅保留当前用户和 SYSTEM。
-        $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
-        $currentSid = $identity.User.Value
-        try {
-            $acl = [System.Security.AccessControl.DirectorySecurity]::new()
-            $acl.SetAccessRuleProtection($true, $false)
-            foreach ($sid in @($identity.User, [System.Security.Principal.SecurityIdentifier]::new('S-1-5-18'))) {
-                $rule = [System.Security.AccessControl.FileSystemAccessRule]::new(
-                    $sid, 'FullControl', 'ContainerInherit, ObjectInherit', 'None', 'Allow')
-                $acl.AddAccessRule($rule)
-            }
-            Set-Acl -LiteralPath $request.path -AclObject $acl
-        } finally { $identity.Dispose() }
-        @{ sid = $currentSid } | ConvertTo-Json -Compress | ForEach-Object { [Console]::Out.Write($_) }
-        exit 0
-    }
-    if ($request.action -ne 'parse') { throw '不支持的辅助操作。' }
+    $utf8 = [System.Text.UTF8Encoding]::new($false, $true)
+    $panelErrorWriter = [System.IO.StreamWriter]::new([Console]::OpenStandardError(), $utf8)
+    $panelErrorWriter.AutoFlush = $true
+    $panelWriter = [System.IO.StreamWriter]::new([Console]::OpenStandardOutput(), $utf8)
+    $panelWriter.AutoFlush = $true
+    $panelReader = [System.IO.StreamReader]::new([Console]::OpenStandardInput(), $utf8)
+    $panelStage = 'read_request'
+    $request = ConvertFrom-Json -InputObject $panelReader.ReadToEnd()
+    $panelAction = [string]$request.action
+    $panelStage = 'validate_request'
+    if ($request.action -ne 'parse') { throw 'ACTION_NOT_SUPPORTED' }
+    $panelStage = 'parse_profile'
     $tokens = $null
     $parseErrors = $null
     $ast = [System.Management.Automation.Language.Parser]::ParseInput(
@@ -74,10 +71,35 @@ try {
     foreach ($group in @($aliases | Group-Object { $_.name.ToLowerInvariant() } | Where-Object Count -gt 1)) {
         $warnings.Add("存在重复别名 $($group.Name)，自动修改 profile 已禁用。")
     }
-    @{ aliases = @($aliases.ToArray()); warnings = @($warnings.ToArray()); errors = @($errors) } |
-        ConvertTo-Json -Depth 12 -Compress | ForEach-Object { [Console]::Out.Write($_) }
+    $panelStage = 'serialize_result'
+    $result = @{ aliases = @($aliases.ToArray()); warnings = @($warnings.ToArray()); errors = @($errors) }
+    $panelWriter.WriteLine((ConvertTo-Json -InputObject $result -Depth 12 -Compress))
 } catch {
-    # 不把用户配置文本带入标准错误或日志。
-    [Console]::Error.Write('配置辅助操作失败。')
+    # 保留完整错误正文和脚本堆栈，便于直接定位实际失败原因。
+    $record = $_
+    $cause = $record.Exception
+    for ($depth = 0; $depth -lt 8 -and $null -ne $cause.InnerException; $depth++) {
+        $cause = $cause.InnerException
+    }
+    $nativeCode = $null
+    if ($cause -is [System.ComponentModel.Win32Exception]) { $nativeCode = $cause.NativeErrorCode }
+    $failure = @{
+        action = $panelAction; stage = $panelStage
+        exceptionType = $cause.GetType().FullName; errorId = $record.FullyQualifiedErrorId
+        message = $record.ToString(); stackTrace = [string]$record.ScriptStackTrace
+        line = [int]$record.InvocationInfo.ScriptLineNumber
+        hresult = $cause.HResult; nativeCode = $nativeCode
+    }
+    if ($null -eq $panelErrorWriter) {
+        $panelErrorWriter = [System.IO.StreamWriter]::new(
+            [Console]::OpenStandardError(), [System.Text.UTF8Encoding]::new($false))
+        $panelErrorWriter.AutoFlush = $true
+    }
+    $panelErrorWriter.WriteLine()
+    $panelErrorWriter.WriteLine('CLI_AUTO_PANEL_ERROR:' + (ConvertTo-Json -InputObject $failure -Compress))
     exit 1
+} finally {
+    if ($null -ne $panelReader) { $panelReader.Dispose() }
+    if ($null -ne $panelWriter) { $panelWriter.Dispose() }
+    if ($null -ne $panelErrorWriter) { $panelErrorWriter.Dispose() }
 }

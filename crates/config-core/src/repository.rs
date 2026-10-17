@@ -1,4 +1,4 @@
-use crate::{files, model::{PanelState, Result}, powershell, security};
+use crate::{files, model::{PanelState, Result}};
 use fs2::FileExt;
 use rusqlite::{params, Connection};
 use std::{fs::{self, File, OpenOptions}, path::Path};
@@ -10,16 +10,12 @@ pub struct Store {
 
 impl Store {
     pub fn open(directory: &Path) -> Result<Self> {
-        fs::create_dir_all(directory).map_err(|e| format!("无法创建面板私有目录：{e}"))?;
+        // 数据目录使用系统默认权限，不再执行额外的 ACL 或 SID 初始化。
+        fs::create_dir_all(directory).map_err(|e| format!("无法创建面板数据目录：{e}"))?;
         let metadata = fs::symlink_metadata(directory).map_err(|e| e.to_string())?;
         if !metadata.is_dir() || files::is_reparse(&metadata) {
             return Err("面板数据目录必须是普通目录，拒绝重解析点。".into());
         }
-        let identity = powershell::helper(&serde_json::json!({
-            "action": "secureDirectory", "path": directory.to_string_lossy()
-        })).map_err(|e| format!("无法保护面板备份目录：{e}"))?;
-        let sid = identity.get("sid").and_then(|v| v.as_str()).ok_or("无法取得当前用户安全标识。")?;
-        security::initialize(sid.into())?;
         let lock = OpenOptions::new().create(true).truncate(false).read(true).write(true)
             .open(directory.join("instance.lock")).map_err(|e| e.to_string())?;
         lock.try_lock_exclusive().map_err(|_| "另一个面板实例正在管理配置，请使用已有窗口。")?;
@@ -65,7 +61,7 @@ impl Store {
         ).map_err(|e| e.to_string())?;
         let expected_json = serde_json::to_string(expected).map_err(|e| e.to_string())?;
         if current != expected_json {
-            return Err("面板状态已变化，请重新生成操作预览。".into());
+            return Err("面板状态已变化，请重新生成操作计划。".into());
         }
         let json = serde_json::to_string(next).map_err(|e| e.to_string())?;
         transaction.execute(

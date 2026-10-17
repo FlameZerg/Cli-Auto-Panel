@@ -16,7 +16,7 @@ where T: Send + 'static, F: FnOnce(&mut Engine) -> std::result::Result<T, String
         if guard.is_none() { *guard = Some(Engine::open()?); }
         let engine = guard.as_mut().ok_or("后端初始化未完成。")?;
         action(engine)
-    }).await.map_err(|_| "后端操作异常中断；如已开始写入，请使用恢复入口。".to_string())?
+    }).await.map_err(|error| format!("后端操作异常中断：{error}；如已开始写入，请使用恢复入口。"))?
 }
 
 #[tauri::command]
@@ -47,11 +47,6 @@ async fn prepare_change(app: tauri::AppHandle, request: ChangeRequest) -> std::r
 }
 
 #[tauri::command]
-async fn preview_change(app: tauri::AppHandle, show_secrets: bool) -> std::result::Result<Preview, String> {
-    access(app, move |engine| engine.preview(show_secrets)).await
-}
-
-#[tauri::command]
 async fn commit_change(app: tauri::AppHandle, id: String) -> std::result::Result<Bootstrap, String> {
     access(app, move |engine| engine.commit(&id)).await
 }
@@ -75,14 +70,14 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             bootstrap, read_config, extract_common, prepare_change,
-            preview_change, commit_change, recover_pending, apply_shortcut
+            commit_change, recover_pending, apply_shortcut
         ])
         .build(tauri::generate_context!());
     if let Err(error) = application.and_then(|app| {
         app.run(|_, _| {});
         Ok(())
     }) {
-        // 启动错误只报告程序框架错误，不输出配置内容。
+        // 启动失败时直接报告框架错误。
         eprintln!("面板启动失败：{error}");
         std::process::exit(1);
     }
