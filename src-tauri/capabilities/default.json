@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "main",
+  "description": "仅允许本地面板使用窗口基础能力；文件操作由受限 Rust 命令完成。",
+  "windows": ["main"],
+  "permissions": ["core:default", "core:window:allow-close"]
+}
