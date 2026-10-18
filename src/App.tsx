@@ -6,9 +6,18 @@ import { CreateAliasForm } from "./features/aliases/CreateAliasForm";
 import { ImportForm } from "./features/aliases/ImportForm";
 import { TemplateEditor } from "./features/common-config/TemplateEditor";
 import { PreviewDialog } from "./features/preview/PreviewDialog";
+import { useTheme } from "./theme";
 import type { Bootstrap, Change, ConfigDraft, ConfigEntry, Kind, Preview, TemplateDraft } from "./types";
 
 type Page = "welcome" | "template" | "config" | "create" | "import" | "history";
+
+// 主题切换是即时呈现开关：不参与业务 busy 状态，避免与配置读写流程互相阻塞。
+function ThemeToggle() {
+  const { theme, toggle } = useTheme();
+  return <button onClick={toggle} aria-label="切换深色浅色模式"
+    title={theme === "dark" ? "切换到浅色模式" : "切换到深色模式"}>
+    {theme === "dark" ? "浅色模式" : "深色模式"}</button>;
+}
 
 export function App() {
   const [data, setData] = useState<Bootstrap | null>(null);
@@ -257,6 +266,7 @@ export function App() {
       <header className="topbar"><div><span className="eyebrow">{kind === "codex" ? "CODEX / CODEXNEW" : "CLAUDE CODE"}</span>
         <h1>通用配置管理</h1></div><div className="topbar-actions">
         {dirty && <span className="draft-indicator">草稿未保存</span>}
+        <ThemeToggle />
         <button disabled={!!busy} onClick={refresh}>刷新清单</button></div></header>
       {busy && <div className="progress" role="status">{busy}</div>}
       {error && <div className="error-box" role="alert">{error}<button className="quiet" onClick={() => setError("")}>关闭提示</button></div>}

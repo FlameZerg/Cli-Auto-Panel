@@ -4,6 +4,17 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>CLI 通用配置面板</title>
+    <script>
+      // 在样式与脚本加载前恢复已保存的主题，避免浅色用户启动瞬间闪深色首帧。
+      // 与 src/theme.tsx 使用同一存储键与默认值；失败时按默认深色渲染。
+      try {
+        var stored = localStorage.getItem("cli-auto-panel.theme");
+        if (stored === "light" || stored === "dark") {
+          document.documentElement.dataset.theme = stored;
+          document.documentElement.style.colorScheme = stored;
+        }
+      } catch (error) { /* 存储不可用时保持默认深色 */ }
+    </script>
   </head>
   <body>
     <div id="root"></div>

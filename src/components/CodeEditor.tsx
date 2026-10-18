@@ -5,6 +5,7 @@ import { EditorState } from "@codemirror/state";
 import { json } from "@codemirror/lang-json";
 import { StreamLanguage } from "@codemirror/language";
 import { toml } from "@codemirror/legacy-modes/mode/toml";
+import { useTheme } from "../theme";
 import type { Kind } from "../types";
 
 interface Props {
@@ -21,6 +22,8 @@ export function CodeEditor({ value, kind, onChange, readOnly = false, label = "�
   const callback = useRef(onChange);
   const initialValue = useRef(value);
   const syncing = useRef(false);
+  const { theme } = useTheme();
+  const dark = theme === "dark";
   callback.current = onChange;
   initialValue.current = value;
 
@@ -39,22 +42,24 @@ export function CodeEditor({ value, kind, onChange, readOnly = false, label = "�
         EditorView.updateListener.of((update) => {
           if (update.docChanged && !syncing.current) callback.current?.(update.state.doc.toString());
         }),
+        // 颜色全部引用 CSS 变量，随 html[data-theme] 自动切换；dark 标志
+        // 决定 CodeMirror 内建补全/选区等 UI 的明暗基准，因此主题切换时重建编辑器。
         EditorView.theme({
-          "&": { height: "100%", fontSize: "13px", backgroundColor: "#11151e", color: "#dde4ee" },
+          "&": { height: "100%", fontSize: "13px", backgroundColor: "var(--bg-page)", color: "var(--text)" },
           ".cm-scroller": { overflow: "auto", fontFamily: "Consolas, 'Cascadia Code', monospace" },
           ".cm-content": { padding: "16px 0", minHeight: "240px" },
-          ".cm-gutters": { backgroundColor: "#10141c", color: "#5f6b80", border: "none" },
-          ".cm-activeLine": { backgroundColor: "#20293966" },
-          ".cm-activeLineGutter": { backgroundColor: "#202939" },
+          ".cm-gutters": { backgroundColor: "var(--bg-rail)", color: "var(--muted)", border: "none" },
+          ".cm-activeLine": { backgroundColor: "var(--accent-bg)" },
+          ".cm-activeLineGutter": { backgroundColor: "var(--bg-column)" },
           "&.cm-focused": { outline: "none" },
-          ".cm-cursor": { borderLeftColor: "#b7bdff" },
-          ".cm-selectionBackground, &.cm-focused .cm-selectionBackground": { backgroundColor: "#374575 !important" },
-        }, { dark: true }),
+          ".cm-cursor": { borderLeftColor: "var(--accent)" },
+          ".cm-selectionBackground, &.cm-focused .cm-selectionBackground": { backgroundColor: "var(--border-control-hover) !important" },
+        }, { dark }),
       ],
     });
     view.current = editor;
     return () => { view.current = null; editor.destroy(); };
-  }, [kind, readOnly, label]);
+  }, [kind, readOnly, label, dark]);
 
   useEffect(() => {
     const editor = view.current;
