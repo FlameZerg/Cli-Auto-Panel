@@ -1,0 +1,17 @@
+import { invoke } from "@tauri-apps/api/core";
+import type { Bootstrap, Change, Document, Kind, Preview } from "./types";
+
+// 集中定义前后端共用的配置操作协议。
+export const api = {
+  bootstrap: () => invoke<Bootstrap>("bootstrap"),
+  readConfig: (id: string) => invoke<Document>("read_config", { id }),
+  extract: (kind: Kind, content: string) =>
+    invoke<{ content: string; excluded: string[] }>("extract_common", { kind, content }),
+  // 草稿级合并预览：把通用配置应用到配置原文，只读运算，不落盘。
+  previewMerge: (kind: Kind, content: string, template: string | null, configId: string | null = null) =>
+    invoke<string>("preview_merge", { kind, content, template, configId }),
+  prepare: (expectedRevision: number, change: Change) =>
+    invoke<Preview>("prepare_change", { request: { expectedRevision, change } }),
+  commit: (id: string) => invoke<Bootstrap>("commit_change", { id }),
+  recover: () => invoke<Bootstrap>("recover_pending"),
+};
