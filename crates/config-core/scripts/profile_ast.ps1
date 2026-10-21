@@ -46,7 +46,11 @@ try {
                 $elements[2] -isnot [System.Management.Automation.Language.StringConstantExpressionAst] -or
                 $elements[3] -isnot [System.Management.Automation.Language.VariableExpressionAst] -or
                 -not $elements[3].Splatted -or $elements[3].VariablePath.UserPath -ne 'args') {
-                $warnings.Add("别名 $($node.Name) 不是受支持的静态函数，自动修改 profile 已禁用。")
+                # 结构异常时携带精确文件位置与原文，避免用户在长 profile 中茫然查找。
+                $where = if ($node.Extent.StartLineNumber -gt 0) {
+                    "profile 第 $($node.Extent.StartLineNumber) 行：$($node.Extent.Text)"
+                } else { $node.Extent.Text }
+                $warnings.Add("别名 $($node.Name) 不是受支持的静态函数，自动修改 profile 已禁用。位置：$where")
                 continue
             }
             $aliases.Add(@{ name = $node.Name; path = $elements[2].Value; kind = 'claude'
@@ -60,8 +64,12 @@ try {
             if (-not $topLevel -or $elements.Count -ne 3 -or
                 $elements[1] -isnot [System.Management.Automation.Language.StringConstantExpressionAst] -or
                 $elements[2] -isnot [System.Management.Automation.Language.StringConstantExpressionAst] -or
-                $elements[1].Value -notmatch '^(codex|codexnew)-[A-Za-z0-9._-]+$') {
-                $warnings.Add('存在动态或不支持的 Codex 注册，自动修改 profile 已禁用。')
+                # \w 在 PowerShell 正则中是 Unicode 语义，放行中文别名；结构异常时携带精确位置。
+                $elements[1].Value -notmatch '^(codex|codexnew)-[\w.-]+$') {
+                $where = if ($node.Extent.StartLineNumber -gt 0) {
+                    "profile 第 $($node.Extent.StartLineNumber) 行：$($node.Extent.Text)"
+                } else { $node.Extent.Text }
+                $warnings.Add("存在动态或不支持的 Codex 注册，自动修改 profile 已禁用。位置：$where")
                 continue
             }
             $aliases.Add(@{ name = $elements[1].Value; path = $elements[2].Value; kind = 'codex'

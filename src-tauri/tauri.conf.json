@@ -19,7 +19,8 @@
         "minWidth": 1050,
         "minHeight": 700,
         "center": true,
-        "backgroundColor": "#0c1017"
+        "backgroundColor": "#0c1017",
+        "dragDropEnabled": false
       }
     ]
   },

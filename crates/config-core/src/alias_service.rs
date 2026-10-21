@@ -21,7 +21,7 @@ pub fn create(
     paths: &Paths, plan: &mut ApplyPlan, ast: &AstResult, profile_text: &str,
     kind: Kind, launcher: &str, name: &str, content: &str,
 ) -> Result<String> {
-    profile_editor::validate_name(kind, name)?;
+    profile_editor::validate_name(name)?;
     if name.eq_ignore_ascii_case("auto") {
         return Err("auto 名称属于现有启动器管理入口，不能覆盖。".into());
     }
@@ -54,7 +54,8 @@ pub fn create(
     Ok(discovery::key(&path))
 }
 
-fn references(paths: &Paths, ast: &AstResult, entry: &ConfigEntry) -> Result<Vec<Alias>> {
+// 删除和重命名共用引用识别，确保同一文件的全部入口被一致处理。
+pub(crate) fn references(paths: &Paths, ast: &AstResult, entry: &ConfigEntry) -> Result<Vec<Alias>> {
     let mut aliases = Vec::new();
     for alias in &ast.aliases {
         let path = discovery::managed_path(paths, Path::new(&alias.path), alias.kind)?;

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { api } from "./api";
+import { useDragSort } from "./features/drag/useDragSort";
 import { ConfigEditor } from "./features/aliases/ConfigEditor";
 import { CreateAliasForm } from "./features/aliases/CreateAliasForm";
 import { ImportForm } from "./features/aliases/ImportForm";
@@ -79,17 +80,39 @@ export function App() {
 
   const disabled = !data || !!busy || !!data.pendingRecovery;
   const entry = data?.inventory.configs.find((c) => c.id === selected);
+  // 模板显示顺序：后端排序直接重排状态库中的 templates 数组，前端沿用数组顺序，不再二次排序。
   const templates = data?.state.templates.filter((t) => t.kind === kind) || [];
-  const configs = data?.inventory.configs.filter((c) =>
-    c.kind === kind && `${c.aliases.join(" ")} ${c.path}`.toLowerCase().includes(search.toLowerCase())) || [];
+  // 别名配置显示顺序：configOrder 全局一份（跨产品页签共享）；未登记的项目按默认顺序排在末尾。
+  const configs = (() => {
+    const base = data?.inventory.configs.filter((c) =>
+      c.kind === kind && `${c.aliases.join(" ")} ${c.path}`.toLowerCase().includes(search.toLowerCase())) || [];
+    const order = data?.state.configOrder;
+    if (!order?.length) return base;
+    const rank = new Map(order.map((id, index) => [id, index]));
+    return [...base].sort((a, b) => (rank.get(a.id) ?? Number.MAX_SAFE_INTEGER) - (rank.get(b.id) ?? Number.MAX_SAFE_INTEGER));
+  })();
 
-  async function perform(label: string, action: () => Promise<void>, writesFiles = false) {
+  // —— 拖拽排序（零依赖）———————————————————————————————————————————
+  // 排序仅在完整列表视图下允许；搜索过滤中的顺序不具备完整语义，直接禁用（快速失败，不做静默猜测）。
+  const dragEnabled = !disabled && !search.trim();
+  // 模板排序提交：基于当前 kind 的完整列表顺序生成 Change，由既有 prepare/commit 管线静默落盘。
+  const templateDrag = useDragSort(templates, (t) => t.id, dragEnabled,
+    (order) => applyChange({ type: "reorderTemplates", kind, order }, false, templateDrag.cancel));
+  // 配置排序提交：全局 configOrder 保存受管文件的显示顺序，跨 Codex / Claude 一份。
+  const configDrag = useDragSort(configs, (c) => c.id, dragEnabled,
+    (order) => applyChange({ type: "reorderConfigs", order }, false, configDrag.cancel));
+
+  async function perform(label: string, action: () => Promise<void>, writesFiles = false, showBusy = true) {
     if (busyRef.current || closingRef.current) return;
     busyRef.current = label;
     writingRef.current = writesFiles;
-    setBusy(label); setError(""); setMessage(""); setOperationNotices([]);
+    if (showBusy) setBusy(label);
+    setError(""); setMessage(""); setOperationNotices([]);
     try { await action(); } catch (failure) { setError(String(failure)); }
-    finally { writingRef.current = false; busyRef.current = ""; setBusy(""); }
+    finally {
+      writingRef.current = false; busyRef.current = "";
+      if (showBusy) setBusy("");
+    }
   }
 
   function navigate(action: () => void) {
@@ -104,21 +127,47 @@ export function App() {
 
   async function loadEntry(target: ConfigEntry, current: Bootstrap) {
     const operation = ++sequence.current;
-    setSelected(target.id); setPage("config"); setConfigDraft(null); setDirty(false);
-    if (target.error) return;
+    if (target.error) {
+      setSelected(target.id); setPage("config"); setConfigDraft(null); setDirty(false);
+      return;
+    }
     const document = await api.readConfig(target.id);
     if (operation !== sequence.current) return;
     const binding = current.state.bindings.find((b) => b.configId === target.id);
-    setConfigDraft({ id: target.id, content: document.content, hash: document.hash,
+    // 文件名中间的后缀作为草稿名称，保存时与命令名保持一致。
+    const filename = target.path.slice(Math.max(target.path.lastIndexOf("\\"), target.path.lastIndexOf("/")) + 1);
+    const name = target.kind === "codex" ? filename.slice(7, -5) : filename.slice(9, -5);
+    // 读取成功后再一次性切换条目，避免异步读取期间卸载当前编辑器造成画面闪烁。
+    setSelected(target.id); setPage("config"); setDirty(false);
+    setConfigDraft({ id: target.id, name, content: document.content, hash: document.hash,
       notices: document.notices, templateId: binding?.templateId || null });
   }
 
   function chooseEntry(target: ConfigEntry) {
-    navigate(() => { if (data) void perform("读取配置文件…", () => loadEntry(target, data)); });
+    if (busyRef.current || closingRef.current) return;
+    // 普通切换只保持操作互斥，不进入会触发布局和透明度变化的全局可视加载态。
+    if (data) void perform("读取配置文件…", () => loadEntry(target, data), false, false);
   }
 
-  function applyChange(change: Change, previewOnly = false) {
-    if (!data || disabled) return;
+  function applyChange(change: Change, previewOnly = false, onReorderFailure?: () => void) {
+    if (!data || disabled || busyRef.current) { onReorderFailure?.(); return; }
+    // 排序是纯界面元数据操作：走静默管线（无进度条、无成功横幅、无提示面板），
+    // 落手瞬间即冻结乐观顺序，提交返回的新状态与冻结序一致时无任何视觉跳变；
+    // 失败时回调解冻，让卡片回弹到状态库权威顺序；错误框明确提示刷新。
+    if (change.type === "reorderTemplates" || change.type === "reorderConfigs") {
+      void (async () => {
+        try {
+          const plan = await api.prepare(data.state.revision, change);
+          const result = await api.commit(plan.id);
+          setData(result); setDirty(false); sequence.current += 1;
+        } catch (failure) {
+          setError(`排序未保存：${String(failure)}`);
+          onReorderFailure?.();
+          try { setData(await api.bootstrap()); } catch { /* 保留原错误，不覆盖 */ }
+        }
+      })();
+      return;
+    }
     // 预览只在主动点击时显示；普通保存和删除沿用同一计划后直接提交。
     void perform(previewOnly ? "生成差异预览…" : "执行配置操作…", async () => {
       const result = await api.prepare(data.state.revision, change);
@@ -157,12 +206,22 @@ export function App() {
         const template = result.state.templates.find((t) => change.id ? t.id === change.id : t.kind === change.kind && t.name === change.name.trim());
         if (template) openTemplate({ ...template });
       } else if (change.type === "saveConfig") {
-        const target = result.inventory.configs.find((c) => c.id === change.id);
-        if (target) await loadEntry(target, result);
+        // 重命名会改变配置 id，依据同目录下的新文件路径重新定位，避免停留在失效条目。
+        const previous = data?.inventory.configs.find((c) => c.id === change.id);
+        if (!previous) throw new Error("保存前的配置条目已失效，请刷新清单。");
+        const filename = previous.kind === "codex" ? `config.${change.name}.toml` : `settings.${change.name}.json`;
+        const separator = Math.max(previous.path.lastIndexOf("\\"), previous.path.lastIndexOf("/"));
+        const path = previous.path.slice(0, separator + 1) + filename;
+        const target = result.inventory.configs.find((c) => c.kind === previous.kind && c.path === path);
+        if (!target) throw new Error("保存后的配置未出现在清单中，请刷新清单。");
+        await loadEntry(target, result);
       } else if (change.type === "createAlias") {
         const prefix = change.kind === "claude" ? "claude" : change.launcher === "codexnew" ? "codexnew" : "codex";
         const target = result.inventory.configs.find((c) => c.aliases.includes(`${prefix}-${change.name}`));
         if (target) await loadEntry(target, result);
+      } else if (change.type === "reorderTemplates" || change.type === "reorderConfigs") {
+        // 排序操作不涉及任何编辑器草稿：保持当前页面与草稿不动，只静默接收新状态。
+        setMessage("");
       } else {
         setSelected(null); setPage("welcome"); setConfigDraft(null); setTemplateDraft(null);
       }
@@ -194,12 +253,12 @@ export function App() {
     }, true);
   }
 
-  function saveTemplate(previewOnly = false) {
-    if (templateDraft) applyChange({ type: "saveTemplate", ...templateDraft }, previewOnly);
+  function saveTemplate(previewOnly = false, syncBindings = true) {
+    if (templateDraft) applyChange({ type: "saveTemplate", ...templateDraft, syncBindings }, previewOnly);
   }
 
   function saveConfig(previewOnly = false) {
-    if (entry && configDraft) applyChange({ type: "saveConfig", id: entry.id, content: configDraft.content,
+    if (entry && configDraft) applyChange({ type: "saveConfig", id: entry.id, name: configDraft.name, content: configDraft.content,
       templateId: configDraft.templateId, expectedHash: configDraft.hash }, previewOnly);
   }
 
@@ -222,23 +281,10 @@ export function App() {
     });
   }
 
-  function shortcut(key: string, enabled: boolean) {
-    const content = page === "template" ? templateDraft?.content : configDraft?.content;
-    if (content === undefined) return;
-    const baseline = content;
-    const operation = sequence.current;
-    void perform("更新草稿快捷设置…", async () => {
-      const updated = await api.shortcut(kind, baseline, key, enabled);
-      if (operation !== sequence.current) return;
-      if (page === "template" && templateDraft) setTemplateDraft({ ...templateDraft, content: updated });
-      if (page === "config" && configDraft) setConfigDraft({ ...configDraft, content: updated });
-      setDirty(true);
-    });
-  }
-
   const resetPage = (next: Page) => {
     setPage(next); setSelected(null); setDirty(false); setError(""); setMessage(""); setOperationNotices([]);
   };
+  // 模板卡片的 click 经 card() 包装：拖拽噪声 click 被吞掉，正常点击进入编辑。
   return <div className="app-shell">
     <aside className="rail">
       <div className="brand"><span className="brand-mark">CLI</span><div><strong>Auto Panel</strong><small>本地配置工作台</small></div></div>
@@ -248,11 +294,14 @@ export function App() {
       </div>
       <div className="sidebar-heading"><span>通用配置</span><button disabled={disabled} onClick={() => navigate(() =>
         openTemplate({ id: null, name: "", kind, content: kind === "claude" ? "{}\n" : "" }))}>新建</button></div>
-      <nav className="template-list" aria-label="通用配置列表">
-        {templates.map((template) => {
+      <nav className="template-list" aria-label="通用配置列表" {...templateDrag.container}>
+        {templateDrag.ordered.map((template) => {
           const count = data?.state.bindings.filter((b) => b.templateId === template.id).length || 0;
-          return <button key={template.id} disabled={!!busy} className={page === "template" && templateDraft?.id === template.id ? "selected" : ""}
-            onClick={() => navigate(() => openTemplate({ ...template }))}><span>{template.name}</span><small>v{template.revision} · {count} 份文件</small></button>;
+          const state = templateDrag.dragging === template.id ? " dragging" : templateDrag.over === template.id ? " drag-over" : "";
+          // 通用配置仅展示名称和绑定数，内部版本继续用于同步，不作为界面文案。
+          return <button key={template.id} disabled={!!busy}
+            className={page === "template" && templateDraft?.id === template.id ? `selected${state}` : state.trim()}
+            {...templateDrag.card(template.id, () => navigate(() => openTemplate({ ...template })))}><span>{template.name}</span><small>{count} 份绑定</small></button>;
         })}
         {!templates.length && <p className="sidebar-empty">还没有通用配置<br />可从现有文件中提取</p>}
       </nav>
@@ -278,23 +327,30 @@ export function App() {
       {data?.pendingRecovery && <div className="error-box">
         <strong>检测到上次未完成的写入，所有新修改已暂停。</strong><p>恢复前会核对全部文件；遇到外部新内容时会停止，不强制覆盖。</p>
         <button className="danger" disabled={!!busy} onClick={recover}>检查并恢复</button></div>}
-      {data?.inventory.warnings.map((warning) => <div className="notice global-notice" key={warning}>{warning}</div>)}
+      {data?.inventory.warnings.filter((warning) => !warning.startsWith("存在失去入口的绑定")).map((warning) =>
+        <div className="notice global-notice" key={warning}>{warning}</div>)}
       {!data ? <div className="welcome"><h2>{busy ? "正在读取本地配置…" : "面板尚未就绪"}</h2>
         <p>需要读取指定的 PowerShell profile。不会执行其中的命令，也不会自动改写已有配置。</p>
         {!busy && <button onClick={refresh}>重试读取</button>}</div> :
         <div className="workspace">
           <section className="config-column"><div className="column-title"><h2>别名配置文件</h2><span>{configs.length}</span></div>
             <input className="search" aria-label="搜索别名或文件" value={search} placeholder="搜索别名或文件…" onChange={(e) => setSearch(e.target.value)} />
-            <div className="config-list">{configs.map((config) => {
+            <div className="config-list" {...configDrag.container}>{configDrag.ordered.map((config) => {
               const binding = data.state.bindings.find((b) => b.configId === config.id);
               const template = data.state.templates.find((t) => t.id === binding?.templateId);
-              const health = config.error ? "读取错误" : binding ? binding.lastHash === config.hash ? "已同步" : "外部已修改" : "未绑定";
-              return <button key={config.id} disabled={!!busy} className={`config-card ${selected === config.id && page === "config" ? "selected" : ""}`}
-                onClick={() => chooseEntry(config)}>
+              // 模板独立保存后，文件仍可能未应用新版，不能仅凭文件哈希标为已同步。
+              const health = config.error ? "读取错误" : binding
+                ? binding.lastHash !== config.hash ? "外部已修改"
+                  : template?.content !== binding.appliedContent ? "待同步" : "已同步"
+                : "未绑定";
+              return <button key={config.id} disabled={!!busy}
+                className={`config-card ${configDrag.dragging === config.id ? "dragging" : ""} ${configDrag.over === config.id ? "drag-over" : ""} ${selected === config.id && page === "config" ? "selected" : ""}`}
+                {...configDrag.card(config.id, () => chooseEntry(config))}>
                 <div className="card-label"><strong>{config.aliases.join(" / ") || "手动导入"}</strong>
-                  <span className={`status ${config.error || health === "外部已修改" ? "warning" : binding ? "synced" : ""}`}>{health}</span></div>
+                  <span className={`status ${config.error || health === "外部已修改" || health === "待同步" ? "warning" : binding ? "synced" : ""}`}>{health}</span></div>
                 <span className="card-path" title={config.path}>{config.path.split(/[\\/]/).pop()}</span>
-                <span className="card-template">{template ? `通用配置：${template.name}` : "保留原配置，可手动选择模板"}</span>
+                {/* 卡片只展示通用配置名称，不重复显示类别前缀。 */}
+                <span className="card-template">{template ? template.name : "保留原配置，可手动选择模板"}</span>
               </button>;
             })}{!configs.length && <p className="empty-small">没有符合条件的配置文件。可新建别名，或手动导入受管目录中的文件。</p>}</div>
             <div className="column-footer">{data.inventory.configs.length} 份文件 · {data.inventory.configs.reduce((sum, c) => sum + c.aliases.length, 0)} 个命令入口</div>
@@ -307,14 +363,15 @@ export function App() {
             {page === "template" && templateDraft && <TemplateEditor draft={templateDraft}
               references={data.state.bindings.filter((b) => b.templateId === templateDraft.id).length}
               disabled={disabled}
-              onChange={(draft) => { setTemplateDraft(draft); setDirty(true); }} onShortcut={shortcut}
+              onChange={(draft) => { setTemplateDraft(draft); setDirty(true); }}
               onExtract={() => extractContent(templateDraft.content, "template")}
               onSave={() => saveTemplate()} onPreview={() => saveTemplate(true)}
-              onDelete={() => templateDraft.id && applyChange({ type: "deleteTemplate", id: templateDraft.id })}
+              onSaveOnly={() => saveTemplate(false, false)}
+              onDelete={() => templateDraft.id && applyChange({ type: "deleteTemplate", id: templateDraft.id }, true)}
               onCopy={() => openTemplate({ ...templateDraft, id: null, name: `${templateDraft.name} - 副本` })} />}
             {page === "config" && entry && <ConfigEditor entry={entry} draft={configDraft} data={data}
               disabled={disabled}
-              onChange={(draft) => { setConfigDraft(draft); setDirty(true); }} onShortcut={shortcut}
+              onChange={(draft) => { setConfigDraft(draft); setDirty(true); }}
               onReload={() => chooseEntry(entry)}
               onExtract={() => { if (configDraft) navigate(() => extractContent(configDraft.content, "new")); }}
               onSave={() => saveConfig()} onPreview={() => saveConfig(true)}
@@ -322,7 +379,7 @@ export function App() {
               onRemoveAlias={(name) => applyChange({ type: "removeAlias", name })} />}
             {page === "create" && <CreateAliasForm key={`create-${kind}`} kind={kind} data={data} disabled={disabled}
               onSubmit={applyChange} onDirty={() => setDirty(true)} onError={(failure) => setError(String(failure))} />}
-            {page === "import" && <ImportForm key={`import-${kind}`} kind={kind} disabled={disabled}
+            {page === "import" && <ImportForm key={`import-${kind}`} kind={kind} data={data} disabled={disabled}
               onSubmit={applyChange} onDirty={() => setDirty(true)} />}
             {page === "history" && <div className="form-section"><span className="eyebrow">LOCAL BACKUPS</span><h2>备份与恢复</h2>
               <p className="notice">只允许恢复当前状态对应的最近操作，避免覆盖后续修改；
@@ -335,7 +392,7 @@ export function App() {
           </section>
         </div>}
       {data && <footer className="app-footer"><span title={data.profilePath}>PowerShell：{data.profilePath}</span>
-        <span>状态 v{data.state.revision} · 保存后无需常驻面板</span></footer>}
+        <span>保存后无需常驻面板</span></footer>}
     </main>
     {preview && <PreviewDialog preview={preview} busy={!!busy}
       onClose={() => { setPreview(null); setPreparedChange(null); }}

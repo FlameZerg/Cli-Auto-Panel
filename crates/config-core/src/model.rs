@@ -38,6 +38,10 @@ pub struct PanelState {
     pub bindings: Vec<Binding>,
     #[serde(default)]
     pub imports: Vec<ImportedConfig>,
+    // 别名配置的自定义显示顺序：跨应用类型全局一份，按配置 id 登记。
+    // 空列表不序列化，保证与旧版本数据库及旧备份的状态比对仍完全一致。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub config_order: Vec<String>,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -98,10 +102,15 @@ pub enum Change {
         name: String,
         kind: Kind,
         content: String,
+        // 旧调用仍默认同步；仅保存模板时不触碰任何引用文件。
+        #[serde(default = "sync_templates_by_default")]
+        sync_bindings: bool,
     },
     DeleteTemplate { id: String },
     SaveConfig {
         id: String,
+        // 缺省时沿用原文件名，兼容不包含重命名请求的保存操作。
+        name: Option<String>,
         content: String,
         template_id: Option<String>,
         expected_hash: String,
@@ -117,7 +126,12 @@ pub enum Change {
     DeleteConfig { id: String, expected_hash: String },
     ImportConfig { path: String, kind: Kind },
     RestoreBackup { id: String },
+    // 应用拖拽排序：一份模板显示顺序、一份别名配置显示顺序，均为全量 id 列表。
+    ReorderTemplates { kind: Kind, order: Vec<String> },
+    ReorderConfigs { order: Vec<String> },
 }
+
+fn sync_templates_by_default() -> bool { true }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -181,6 +195,9 @@ pub struct Bootstrap {
     pub inventory: Inventory,
     pub history: Vec<HistoryEntry>,
     pub profile_path: String,
+    // 返回实际受管目录，供新建和导入界面显示。
+    pub codex_root: String,
+    pub claude_root: String,
     pub data_path: String,
     pub pending_recovery: bool,
 }

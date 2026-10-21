@@ -31,10 +31,15 @@ export interface Bootstrap {
     templates: Template[];
     bindings: Binding[];
     imports: { path: string; kind: Kind }[];
+    // 别名配置的自定义显示顺序；缺省表示尚未排序（沿用默认顺序）。
+    configOrder?: string[];
   };
   inventory: { configs: ConfigEntry[]; warnings: string[] };
   history: { id: string; label: string; createdAt: string; canRestore: boolean }[];
   profilePath: string;
+  // 实际受管目录由后端解析，前端不再硬编码盘符或推断用户目录。
+  codexRoot: string;
+  claudeRoot: string;
   dataPath: string;
   pendingRecovery: boolean;
 }
@@ -53,9 +58,10 @@ export interface Preview {
 }
 
 export type Change =
-  | { type: "saveTemplate"; id: string | null; name: string; kind: Kind; content: string }
+  | { type: "saveTemplate"; id: string | null; name: string; kind: Kind; content: string; syncBindings: boolean }
   | { type: "deleteTemplate"; id: string }
-  | { type: "saveConfig"; id: string; content: string; templateId: string | null; expectedHash: string }
+  // 名称后缀与配置草稿一起保存，由后端同步更新文件及全部命令入口。
+  | { type: "saveConfig"; id: string; name: string; content: string; templateId: string | null; expectedHash: string }
   | {
       type: "createAlias"; kind: Kind; launcher: string; name: string; content: string;
       templateId: string | null;
@@ -63,7 +69,9 @@ export type Change =
   | { type: "removeAlias"; name: string }
   | { type: "deleteConfig"; id: string; expectedHash: string }
   | { type: "importConfig"; path: string; kind: Kind }
-  | { type: "restoreBackup"; id: string };
+  | { type: "restoreBackup"; id: string }
+  | { type: "reorderTemplates"; kind: Kind; order: string[] }
+  | { type: "reorderConfigs"; order: string[] };
 
 export interface TemplateDraft {
   id: string | null;
@@ -74,6 +82,7 @@ export interface TemplateDraft {
 
 export interface ConfigDraft {
   id: string;
+  name: string;
   content: string;
   hash: string;
   templateId: string | null;

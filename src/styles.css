@@ -16,7 +16,6 @@
   --sidebar-heading-text: #8190a7;
   --quiet-text: #a7b1c5;
   --bg-rail-button: #161d29;
-  --shortcut-text: #a7b3c9;
   --danger-alert-text: #ffa1ad;
   --tab-bg: #090e16; --tab-text: #8794a9; --tab-active-bg: #2c2943; --tab-active-text: #d6ceff;
   --heading-btn-bg: #252137; --heading-btn-text: #b7aaff;
@@ -33,7 +32,7 @@
   --error-border: #69343f; --error-bg: #40202966; --error-text: #f1b3bc;
   --success-border: #315247; --success-bg: #16322b66; --success-text: #9ecdbd;
   --progress-text: #c9baff; --progress-bg: #2a2344;
-  --box-border: #283347; --summary-text: #627087;
+  --box-border: #283347;
   --draft-text: #e7bc7a;
   --eyebrow-text: #8191ac;
   --welcome-label-border: #4d4269; --welcome-label-bg: #28223c; --welcome-label-text: #c4afff;
@@ -44,6 +43,9 @@
   --history-small: #7b89a1;
   --modal-border: #43516b; --modal-bg: #151c28; --modal-text: #d3ddeb; --backdrop: #03060acb;
   --diff-bg: #0e141e; --diff-border: #2a3649; --diff-pre-bg: #0a1019; --diff-pre-text: #a7b4ca;
+  /* 红删绿增在两种主题中均使用独立前景和整行背景，不依赖颜色表达唯一语义。 */
+  --diff-remove-bg: #3c2028; --diff-remove-text: #ffb4bd;
+  --diff-add-bg: #16372a; --diff-add-text: #a3e6bb;
   --brand-border: #605487; --brand-grad-a: #534571; --brand-grad-b: #28253c; --brand-text: #e3d7ff; --brand-sub: #6f7d94;
   --tab-list-small: #727f95;
   --label-text: #b7c2d4;
@@ -67,7 +69,6 @@
   --sidebar-heading-text: #7484a0;
   --quiet-text: #5c6a80;
   --bg-rail-button: #f2f3f8;
-  --shortcut-text: #3f4c63;
   --danger-alert-text: #c22f3f;
   --tab-bg: #e2e5ee; --tab-text: #5c6a80; --tab-active-bg: #ffffff; --tab-active-text: #4a3fb5;
   --heading-btn-bg: #e9e5fb; --heading-btn-text: #5747c2;
@@ -84,7 +85,7 @@
   --error-border: #eec4c9; --error-bg: #fdeeef; --error-text: #a03040;
   --success-border: #bfe3d4; --success-bg: #e9f7f1; --success-text: #1e6e50;
   --progress-text: #4a3fb5; --progress-bg: #ece8fb;
-  --box-border: #d8dfee; --summary-text: #7484a0;
+  --box-border: #d8dfee;
   --draft-text: #9a6a16;
   --eyebrow-text: #7484a0;
   --welcome-label-border: #cfc7f2; --welcome-label-bg: #efeafb; --welcome-label-text: #5747c2;
@@ -95,6 +96,8 @@
   --history-small: #74839c;
   --modal-border: #d3dae6; --modal-bg: #ffffff; --modal-text: #232a36; --backdrop: #1a22305c;
   --diff-bg: #f4f5f9; --diff-border: #dde3ec; --diff-pre-bg: #eef0f6; --diff-pre-text: #3c4759;
+  --diff-remove-bg: #ffebe9; --diff-remove-text: #a12622;
+  --diff-add-bg: #dafbe1; --diff-add-text: #116329;
   --brand-border: #c9bff2; --brand-grad-a: #efeafb; --brand-grad-b: #ddd6f8; --brand-text: #5747c2; --brand-sub: #7484a0;
   --tab-list-small: #74839c;
   --label-text: #46536a;
@@ -160,6 +163,14 @@ main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 .config-list { padding: 0 10px 20px; display: flex; flex-direction: column; gap: 8px; }
 .config-card { text-align: left; padding: 15px 12px; background: var(--card-bg); border: 1px solid var(--card-border); display: flex; flex-direction: column; gap: 12px; border-radius: 8px; }
 .config-card.selected { background: var(--card-selected-bg); border-color: var(--card-selected-border); box-shadow: inset 2px 0 var(--card-selected-bar); }
+/* 拖拽排序的状态反馈：拖动中的卡片半透明，悬停目标上边缘出现插入指示线。
+   让位动画只动 transform（合成层），不触发 layout，保证多卡片同帧平移不掉帧。 */
+.config-card { transition: transform .16s ease, opacity .12s ease; }
+.config-card.dragging { opacity: .45; }
+.config-card.drag-over { box-shadow: 0 -2px 0 0 var(--card-selected-bar); border-radius: 8px 8px 0 0; }
+.template-list button { transition: transform .16s ease, opacity .12s ease; }
+.template-list button.dragging { opacity: .45; }
+.template-list button.drag-over { box-shadow: 0 -2px 0 0 var(--list-selected-border); }
 .card-label { display: flex; justify-content: space-between; align-items: flex-start; gap: 7px; }
 .card-label strong { font-size: 12px; font-weight: 500; overflow-wrap: anywhere; line-height: 1.6; }
 .status { white-space: nowrap; font-size: 9px; padding: 3px 5px; color: var(--status-text); background: var(--status-bg); border-radius: 3px; }
@@ -183,6 +194,24 @@ main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 .editor-toolbar { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px; }
 .editor-toolbar > div { display: flex; gap: 8px; }
 .code-editor { border: 1px solid var(--editor-border); border-radius: 8px; overflow: hidden; height: clamp(270px, 43vh, 540px); min-width: 0; }
+/* 标题、状态和代码共用一个外框，红绿差异直接展示在原编辑器的滚动区域中。 */
+.code-editor-shell { min-width: 0; }
+.code-editor-shell.has-inline-diff { border: 1px solid var(--editor-border); border-radius: 8px; overflow: hidden; }
+.has-inline-diff .code-editor { border: none; border-radius: 0; }
+.inline-diff-heading { background: var(--diff-pre-bg); border-bottom: 1px solid var(--diff-border); }
+.inline-diff-heading .diff-heading { border-bottom: none; }
+.inline-diff-status, .inline-diff-error { margin: 0; padding: 0 12px 10px; font-size: 11px; }
+.inline-diff-error { color: var(--error-text); white-space: pre-wrap; overflow-wrap: anywhere; }
+.code-editor-shell.has-inline-diff .cm-line { position: relative; padding-left: 22px; }
+.cm-line.cm-diff-removed-line { background: var(--diff-remove-bg) !important; }
+.cm-diff-removed-line, .cm-diff-removed-line span { color: var(--diff-remove-text) !important; }
+.cm-diff-removed-line::before { content: "−"; position: absolute; left: 6px; user-select: none; }
+.cm-diff-removed-line[data-no-newline="true"]::after { content: " ↵（末行无换行）"; color: var(--muted); font-size: 10px; }
+.cm-diff-added-block { background: var(--diff-add-bg); color: var(--diff-add-text); }
+.cm-diff-added-line { display: flex; align-items: baseline; padding: 0 2px 0 6px; }
+.cm-diff-sign { flex: 0 0 16px; user-select: none; }
+.cm-diff-added-text { min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.cm-diff-no-newline { color: var(--muted); font-size: 10px; flex-shrink: 0; }
 .file-path { overflow-wrap: anywhere; font-size: 11px; color: var(--path-text); font-family: Consolas, monospace; }
 .notice { background: var(--notice-bg); border: 1px solid var(--notice-border); color: var(--notice-text); padding: 12px 15px; border-radius: 7px; font-size: 11px; line-height: 1.9; overflow-wrap: anywhere; margin: 0; }
 .global-notice { margin: 12px 24px 0; }
@@ -194,13 +223,8 @@ main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 .error-box > button.quiet, .success-box > button.quiet { margin-left: 10px; font-size: 10px; }
 .progress { padding: 9px 28px; color: var(--progress-text); background: var(--progress-bg); font-size: 11px; }
 .actions { display: flex; flex-wrap: wrap; gap: 10px; }
-.shortcuts, .copy-source { border: 1px solid var(--box-border); border-radius: 7px; padding: 12px; font-size: 11px; }
+.copy-source { border: 1px solid var(--box-border); border-radius: 7px; padding: 12px; font-size: 11px; }
 summary { cursor: pointer; line-height: 1.9; }
-.shortcuts summary span { color: var(--summary-text); margin-left: 10px; font-size: 10px; }
-.shortcut-grid { margin-top: 14px; display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; }
-.shortcut-grid > div { display: flex; align-items: center; gap: 7px; }
-.shortcut-grid > div > span { flex: 1; color: var(--shortcut-text); }
-.shortcut-grid button { padding: 5px 8px; font-size: 10px; }
 .copy-source > select { width: 100%; margin-top: 10px; }
 .copy-source h3 { margin: 0; font-size: 12px; font-weight: 500; }
 .copy-source > button { margin-top: 12px; }
@@ -230,9 +254,22 @@ summary { cursor: pointer; line-height: 1.9; }
 .modal-footer { display: flex; justify-content: flex-end; gap: 10px; padding: 17px 24px; border-top: 1px solid var(--line); }
 .file-diff { background: var(--diff-bg); border: 1px solid var(--diff-border); padding: 12px; border-radius: 7px; }
 .file-diff summary { font-size: 11px; overflow-wrap: anywhere; }
-.diff-columns { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 15px; }
-.diff-columns > div { min-width: 0; }
-.diff-columns pre { background: var(--diff-pre-bg); color: var(--diff-pre-text); font: 11px/1.8 Consolas, monospace; padding: 12px; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 300px; overflow-y: auto; margin: 0; border-radius: 4px; }
+.code-diff { min-width: 0; overflow: hidden; border: 1px solid var(--diff-border); border-radius: 7px; background: var(--diff-pre-bg); }
+.file-diff .code-diff { margin-top: 12px; }
+.diff-heading { padding: 10px 12px; display: flex; justify-content: space-between; flex-wrap: wrap; gap: 10px; font-size: 11px; color: var(--muted); border-bottom: 1px solid var(--diff-border); }
+.diff-legend { display: inline-flex; gap: 12px; }
+.diff-removed { color: var(--diff-remove-text); }
+.diff-added { color: var(--diff-add-text); }
+.diff-unchanged { margin: 0; padding: 10px 12px; color: var(--muted); font-size: 11px; }
+/* 每行保留原、新行号及正负标记；长行水平滚动，不因换行破坏对齐。 */
+.diff-code { max-height: 430px; overflow: auto; color: var(--diff-pre-text); font: 12px/1.8 Consolas, "Cascadia Code", monospace; }
+.diff-line { display: flex; min-width: 100%; width: max-content; }
+.diff-number { width: 5ch; flex-shrink: 0; padding: 0 8px; text-align: right; color: var(--muted); opacity: .8; user-select: none; border-right: 1px solid var(--diff-border); }
+.diff-sign { width: 3ch; flex-shrink: 0; text-align: center; user-select: none; }
+.diff-text { padding-right: 14px; white-space: pre; tab-size: 4; }
+.diff-remove { background: var(--diff-remove-bg); color: var(--diff-remove-text); }
+.diff-add { background: var(--diff-add-bg); color: var(--diff-add-text); }
+.diff-no-newline { color: var(--muted); font-size: 10px; }
 @media (max-width: 1200px) {
   .rail { width: 190px; min-width: 190px; padding-inline: 11px; }
   .workspace { grid-template-columns: 250px minmax(0, 1fr); }

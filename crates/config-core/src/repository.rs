@@ -56,11 +56,18 @@ impl Store {
 
     pub fn replace(&mut self, expected: &PanelState, next: &PanelState) -> Result<()> {
         let transaction = self.connection.transaction().map_err(|e| e.to_string())?;
-        let current: String = transaction.query_row(
-            "SELECT body FROM panel_state WHERE id=1", [], |r| r.get(0)
+        let (revision, body): (u64, String) = transaction.query_row(
+            "SELECT revision, body FROM panel_state WHERE id=1", [],
+            |r| Ok((r.get(0)?, r.get(1)?))
         ).map_err(|e| e.to_string())?;
-        let expected_json = serde_json::to_string(expected).map_err(|e| e.to_string())?;
-        if current != expected_json {
+        // 先按当前模型补齐旧版缺省字段，再比较状态，避免序列化格式差异阻断保存或恢复。
+        let current: PanelState = serde_json::from_str(&body)
+            .map_err(|_| "面板数据库格式无效，不能自动重置或丢弃已有绑定。")?;
+        if current.revision != revision {
+            return Err("面板数据库版本与内容不一致，已停止写入。".into());
+        }
+        if serde_json::to_value(&current).map_err(|e| e.to_string())?
+            != serde_json::to_value(expected).map_err(|e| e.to_string())? {
             return Err("面板状态已变化，请重新生成操作计划。".into());
         }
         let json = serde_json::to_string(next).map_err(|e| e.to_string())?;

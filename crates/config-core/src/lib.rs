@@ -10,6 +10,7 @@ pub mod model;
 mod planner;
 mod powershell;
 mod profile_editor;
+mod rename_service;
 mod repository;
 
 use model::*;
@@ -22,17 +23,25 @@ pub struct Engine {
     preview: Option<ApplyPlan>,
 }
 
+// 配置目录遵循各 CLI 的环境变量，未设置时使用当前用户默认目录。
+fn config_root(variable: &str, default: PathBuf) -> Result<PathBuf> {
+    let root = std::env::var_os(variable).filter(|value| !value.is_empty())
+        .map(PathBuf::from).unwrap_or(default);
+    if !root.is_absolute() { return Err(format!("{variable} 必须是绝对路径。")); }
+    Ok(root)
+}
+
 impl Engine {
     pub fn open() -> Result<Self> {
         let user = dirs::home_dir().ok_or("无法确定当前用户目录。")?;
         let local = dirs::data_local_dir().ok_or("无法确定当前用户应用数据目录。")?;
-        let codex_home = std::env::var_os("CODEX_HOME").filter(|v| !v.is_empty())
-            .map(PathBuf::from).unwrap_or_else(|| user.join(".codex"));
-        if !codex_home.is_absolute() { return Err("CODEX_HOME 必须是绝对路径。".into()); }
+        let codex_home = config_root("CODEX_HOME", user.join(".codex"))?;
+        let claude_home = config_root("CLAUDE_CONFIG_DIR", user.join(".claude"))?;
         let paths = Paths {
             profile: user.join("Documents/PowerShell/Microsoft.PowerShell_profile.ps1"),
-            codex_root: PathBuf::from(r"E:\.codex\ccs"),
-            claude_root: PathBuf::from(r"E:\.claude"),
+            // 别名配置直接放在实际配置根目录，不再依赖私有盘符或 ccs 子目录。
+            codex_root: codex_home.clone(),
+            claude_root: claude_home,
             codex_base: codex_home.join("config.toml"),
             data: local.join("CliAutoPanel"),
         };
@@ -67,6 +76,9 @@ impl Engine {
             history: journal::history(&self.paths.data, &state)?,
             state, inventory,
             profile_path: self.paths.profile.to_string_lossy().into(),
+            // 界面提示与后端路径校验共用同一目录来源，避免前端猜测用户路径。
+            codex_root: self.paths.codex_root.to_string_lossy().into(),
+            claude_root: self.paths.claude_root.to_string_lossy().into(),
             data_path: self.paths.data.to_string_lossy().into(),
             pending_recovery: journal::pending(&self.paths.data),
         })
@@ -105,33 +117,34 @@ impl Engine {
         extract::extract(kind, content)
     }
 
-    pub fn shortcut(&self, kind: Kind, content: &str, key: &str, enabled: bool) -> Result<String> {
-        planner::validate(kind, content)?;
-        let snippet = match (kind, key) {
-            (Kind::Claude, "attribution") => r#"{"attribution":{"commit":"","pr":""}}"#,
-            (Kind::Claude, "teams") => r#"{"env":{"CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS":"1"}}"#,
-            (Kind::Claude, "toolSearch") => r#"{"env":{"ENABLE_TOOL_SEARCH":"true"}}"#,
-            (Kind::Claude, "effort") => r#"{"env":{"CLAUDE_CODE_EFFORT_LEVEL":"max"}}"#,
-            (Kind::Claude, "updates") => r#"{"env":{"DISABLE_AUTOUPDATER":"1"}}"#,
-            (Kind::Claude, "artifact") => r#"{"env":{"CLAUDE_CODE_DISABLE_ARTIFACT":"1"}}"#,
-            (Kind::Codex, "notifications") => "[tui]\nnotifications = true\n",
-            (Kind::Codex, "storage") => "disable_response_storage = true\n",
-            _ => return Err("不支持的快捷设置。".into()),
-        };
-        if enabled { planner::apply(kind, content, snippet) } else {
-            match kind {
-                Kind::Claude => merge_json::strip(content, snippet),
-                Kind::Codex => merge_toml::strip(content, snippet),
+    // 只读草稿预览沿用保存逻辑，按实际绑定剥离旧片段，不读取或改写配置文件。
+    pub fn preview_merge(
+        &self, kind: Kind, content: &str, template: Option<&str>, config_id: Option<&str>,
+    ) -> Result<String> {
+        let state = self.store.load()?;
+        let binding = config_id.and_then(|id| state.bindings.iter().find(|b| b.config_id == id));
+        if let Some(binding) = binding {
+            if state.templates.iter().any(|t| t.id == binding.template_id && t.kind != kind) {
+                return Err("不能跨 Codex / Claude 预览通用配置。".into());
             }
         }
+        planner::merge_config(kind, content, binding.map(|b| b.applied_content.as_str()), template)
     }
 
     pub fn prepare(&mut self, request: ChangeRequest) -> Result<Preview> {
         self.preview = None;
         if journal::pending(&self.paths.data) { return Err("必须先恢复未完成操作，再创建新的修改计划。".into()); }
         let state = self.store.load()?;
-        let (profile_hash, ast) = self.ast()?;
-        let inventory = discovery::inventory(&self.paths, &ast, &state);
+        // 独立模板操作不需要配置清单，允许直接清理阻断同步的历史绑定。
+        let metadata_only = matches!(&request.change,
+            Change::DeleteTemplate { .. } | Change::SaveTemplate { sync_bindings: false, .. });
+        let (profile_hash, ast, inventory) = if metadata_only {
+            (String::new(), AstResult::default(), Inventory { configs: Vec::new(), warnings: Vec::new() })
+        } else {
+            let (hash, ast) = self.ast()?;
+            let inventory = discovery::inventory(&self.paths, &ast, &state);
+            (hash, ast, inventory)
+        };
         let plan = planner::prepare(&self.paths, state, &inventory, &ast, &profile_hash, request)?;
         self.validate_plan_paths(&plan)?;
         // 差异生成失败时不保留可提交计划，避免失败请求遗留有效写入入口。

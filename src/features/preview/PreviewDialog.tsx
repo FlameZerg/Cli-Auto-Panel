@@ -1,4 +1,5 @@
 import { Modal } from "../../components/Modal";
+import { CodeDiff } from "./CodeDiff";
 import type { Preview } from "../../types";
 
 interface Props {
@@ -9,11 +10,13 @@ interface Props {
 }
 
 export function PreviewDialog({ preview, busy, onCommit, onClose }: Props) {
+  // 删除预览的提交按钮明确标示危险动作，避免把删除误读为普通保存。
+  const deleting = preview.files.some((file) => ["真实删除", "删除模板"].includes(file.action));
   return (
     <Modal wide title={preview.label} onClose={() => !busy && onClose()} footer={
       <><button disabled={busy} onClick={onClose}>返回编辑</button>
-        <button className="primary" disabled={busy} onClick={onCommit}>
-          {busy ? "正在提交…" : "保存并同步"}
+        <button className={deleting ? "danger" : "primary"} disabled={busy} onClick={onCommit}>
+          {busy ? "正在提交…" : deleting ? "确认删除" : "保存并同步"}
         </button></>
     }>
       <p className="muted">仅提交以下范围。文件、profile 和模板绑定共用恢复日志；不重载已有终端，不结束会话。</p>
@@ -23,8 +26,7 @@ export function PreviewDialog({ preview, busy, onCommit, onClose }: Props) {
         <details className="file-diff" key={file.path} open>
           {/* 文件删除与模板删除使用相同提示色，保持差异动作展示一致。 */}
           <summary><span className={["真实删除", "删除模板"].includes(file.action) ? "danger-text" : "accent"}>{file.action}</span> {file.path}</summary>
-          <div className="diff-columns"><div><h4>操作前</h4><pre>{file.before || "（不存在或为空）"}</pre></div>
-            <div><h4>操作后</h4><pre>{file.after || "（不存在或为空）"}</pre></div></div>
+          <CodeDiff before={file.before} after={file.after} label="操作前 → 操作后" />
         </details>
       ))}
     </Modal>

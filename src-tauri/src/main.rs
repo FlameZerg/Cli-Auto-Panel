@@ -35,10 +35,10 @@ async fn extract_common(app: tauri::AppHandle, kind: Kind, content: String) -> s
 }
 
 #[tauri::command]
-async fn apply_shortcut(
-    app: tauri::AppHandle, kind: Kind, content: String, key: String, enabled: bool,
+async fn preview_merge(
+    app: tauri::AppHandle, kind: Kind, content: String, template: Option<String>, config_id: Option<String>,
 ) -> std::result::Result<String, String> {
-    access(app, move |engine| engine.shortcut(kind, &content, &key, enabled)).await
+    access(app, move |engine| engine.preview_merge(kind, &content, template.as_deref(), config_id.as_deref())).await
 }
 
 #[tauri::command]
@@ -69,8 +69,8 @@ fn main() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            bootstrap, read_config, extract_common, prepare_change,
-            commit_change, recover_pending, apply_shortcut
+            bootstrap, read_config, extract_common, preview_merge, prepare_change,
+            commit_change, recover_pending
         ])
         .build(tauri::generate_context!());
     if let Err(error) = application.and_then(|app| {

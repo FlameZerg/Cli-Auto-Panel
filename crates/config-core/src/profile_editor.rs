@@ -20,28 +20,34 @@ pub fn read(path: &Path) -> Result<(Text, Vec<u8>, String)> {
     Ok((text, bytes, identity))
 }
 
-pub fn editable(ast: &AstResult, text: &str) -> Result<()> {
-    if !ast.errors.is_empty() || !ast.warnings.is_empty() {
-        return Err("profile 存在语法错误、动态注册或重复别名，已阻止自动修改；请先手动处理。".into());
+// 语法错误（errors）只做位置标记，不再整体阻断 profile 修改：损坏行之外的
+// 注册、别名与文件操作照常可用（对齐 cc-switch 的"标记不阻断"策略）。
+// 仅当存在无法安全确定编辑范围的警告（动态注册、重复别名）时才保持快速失败。
+pub fn editable_kind(ast: &AstResult) -> Result<()> {
+    if !ast.warnings.is_empty() {
+        return Err("profile 存在动态注册或重复别名，已阻止自动修改；请先手动处理。".into());
     }
+    Ok(())
+}
+
+pub fn editable(ast: &AstResult, text: &str) -> Result<()> {
+    editable_kind(ast)?;
     if text.contains("# SIG # Begin signature block") {
         return Err("profile 带有数字签名，自动修改会破坏签名，已停止。".into());
     }
     Ok(())
 }
 
-pub fn validate_name(kind: Kind, name: &str) -> Result<()> {
+pub fn validate_name(name: &str) -> Result<()> {
+    // Codex 与 Claude 统一放行 Unicode 字母：中文别名从 AST 解析到注册生成全链路受支持。
     let valid = !name.is_empty()
         && name.len() <= 80
         && !name.starts_with('.')
         && !name.ends_with('.')
         && !name.contains("..")
-        && name.chars().all(|c| {
-            c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.')
-                || (kind == Kind::Claude && c.is_alphanumeric())
-        });
+        && name.chars().all(|c| c.is_alphanumeric() || matches!(c, '-' | '_' | '.'));
     if !valid {
-        return Err("名称须为 1～80 字节的字母、数字、点、短横线或下划线；Claude 也支持中文，不允许连续点或首尾点。".into());
+        return Err("名称须为 1～80 字节的字母（含中文）、数字、点、短横线或下划线，不允许连续点或首尾点。".into());
     }
     Ok(())
 }
@@ -86,7 +92,8 @@ pub fn append(text: &str, ast: &AstResult, aliases: &[(String, String, Kind)]) -
         }
     }
     for original in &ast.aliases {
-        if !after.aliases.iter().any(|a| a.name == original.name && a.path == original.path && a.kind == original.kind) {
+        if after.errors.is_empty()
+            && !after.aliases.iter().any(|a| a.name == original.name && a.path == original.path && a.kind == original.kind) {
             return Err("生成注册时影响了其他别名，已停止。".into());
         }
     }
@@ -121,16 +128,48 @@ pub fn remove(text: &str, ast: &AstResult, aliases: &[Alias]) -> Result<String> 
         last_start = start;
     }
     let after = ensure_valid(&updated)?;
-    if aliases.iter().any(|removed| after.aliases.iter().any(|a| a.name == removed.name)) {
+    // 语法错误标记不阻断（原始文本可能本就带错误行，删除后仍保留），仅在
+    // 解析成功时才校验“删掉的别名确实从顶层消失了”。
+    if after.errors.is_empty()
+        && aliases.iter().any(|removed| after.aliases.iter().any(|a| a.name == removed.name)) {
         return Err("别名删除后仍存在对应顶层注册，已停止。".into());
     }
     Ok(updated)
 }
 
+// 复用已校验的静态注册生成逻辑，所有共享入口只替换后缀并保留启动器类型。
+pub fn rename(
+    text: &str, ast: &AstResult, aliases: &[Alias], path: &str, name: &str,
+) -> Result<String> {
+    if aliases.is_empty() { return Ok(text.into()); }
+    let mut names = std::collections::HashSet::new();
+    let registrations = aliases.iter().map(|alias| {
+        let (prefix, _) = alias.name.split_once('-').ok_or("命令名称缺少受支持的启动器前缀。")?;
+        match (alias.kind, prefix.to_ascii_lowercase().as_str()) {
+            (Kind::Codex, "codex" | "codexnew") | (Kind::Claude, "claude") => {}
+            _ => return Err("命令启动器与配置类型不匹配，已停止重命名。".into()),
+        }
+        let command = format!("{prefix}-{name}");
+        if !names.insert(command.to_lowercase()) {
+            return Err(format!("多个共享入口重命名后会产生重复命令：{command}"));
+        }
+        if ast.aliases.iter().any(|other| other.name.eq_ignore_ascii_case(&command)
+            && !aliases.iter().any(|original| original.name == other.name)) {
+            return Err(format!("目标命令已经存在，拒绝覆盖：{command}"));
+        }
+        Ok((command, path.to_owned(), alias.kind))
+    }).collect::<Result<Vec<_>>>()?;
+    let removed = remove(text, ast, aliases)?;
+    let remaining = parse(&removed)?;
+    append(&removed, &remaining, &registrations)
+}
+
+// 写入前的自检：语法错误沿用“标记不阻断”策略——只要本次编辑没有引入新错误即可落盘。
+// warnings（动态注册/重复别名）出现即拒绝，这两类无法安全确定编辑范围。
 fn ensure_valid(text: &str) -> Result<AstResult> {
     let result = parse(text)?;
-    if !result.errors.is_empty() || !result.warnings.is_empty() {
-        return Err("更新后的 profile 未通过受限语法检查，未写入文件。".into());
+    if !result.warnings.is_empty() {
+        return Err("更新后的 profile 含动态注册或重复别名，未写入文件。".into());
     }
     Ok(result)
 }

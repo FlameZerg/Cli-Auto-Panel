@@ -7,8 +7,9 @@ export const api = {
   readConfig: (id: string) => invoke<Document>("read_config", { id }),
   extract: (kind: Kind, content: string) =>
     invoke<{ content: string; excluded: string[] }>("extract_common", { kind, content }),
-  shortcut: (kind: Kind, content: string, key: string, enabled: boolean) =>
-    invoke<string>("apply_shortcut", { kind, content, key, enabled }),
+  // 草稿级合并预览：把通用配置应用到配置原文，只读运算，不落盘。
+  previewMerge: (kind: Kind, content: string, template: string | null, configId: string | null = null) =>
+    invoke<string>("preview_merge", { kind, content, template, configId }),
   prepare: (expectedRevision: number, change: Change) =>
     invoke<Preview>("prepare_change", { request: { expectedRevision, change } }),
   commit: (id: string) => invoke<Bootstrap>("commit_change", { id }),
