@@ -25,23 +25,53 @@ export interface ConfigEntry {
   error: string | null;
 }
 
+// 分组属于产品页签，只组织卡片，不关联通用配置或改变真实目录。
+export interface ConfigGroup {
+  id: string;
+  name: string;
+  kind: Kind;
+  configIds: string[];
+}
+
 export interface Bootstrap {
   state: {
     revision: number;
+    layoutRevision?: number;
     templates: Template[];
     bindings: Binding[];
     imports: { path: string; kind: Kind }[];
     // 别名配置的自定义显示顺序；缺省表示尚未排序（沿用默认顺序）。
     configOrder?: string[];
+    // 旧状态不含此字段时，全部卡片视为未分组。
+    configGroups?: ConfigGroup[];
+    templateOrder?: string[];
   };
   inventory: { configs: ConfigEntry[]; warnings: string[] };
-  history: { id: string; label: string; createdAt: string; canRestore: boolean }[];
+  history: { id: string; label: string; createdAt: string; canRestore: boolean; legacy: boolean }[];
+  historyError: string | null;
   profilePath: string;
   // 实际受管目录由后端解析，前端不再硬编码盘符或推断用户目录。
   codexRoot: string;
   claudeRoot: string;
   dataPath: string;
   pendingRecovery: boolean;
+}
+
+// 保存已成功时仍可能有清理或刷新错误，不能将这些错误引导为重复保存。
+export interface CommitOutcome {
+  id: string;
+  snapshot: Bootstrap | null;
+  warnings: string[];
+  refreshError: string | null;
+}
+
+export interface LayoutOutcome {
+  layoutRevision: number;
+  configOrder: string[];
+  templateOrder: string[];
+  configGroups: ConfigGroup[];
+  history: Bootstrap["history"] | null;
+  historyError: string | null;
 }
 
 export interface Document {
@@ -71,7 +101,13 @@ export type Change =
   | { type: "importConfig"; path: string; kind: Kind }
   | { type: "restoreBackup"; id: string }
   | { type: "reorderTemplates"; kind: Kind; order: string[] }
-  | { type: "reorderConfigs"; order: string[] };
+  | { type: "reorderConfigs"; order: string[] }
+  | ConfigGroupChange;
+
+export type ConfigGroupChange =
+  | { type: "saveConfigGroup"; id: string | null; name: string; kind: Kind }
+  | { type: "deleteConfigGroup"; id: string }
+  | { type: "assignConfigGroup"; configId: string; groupId: string | null };
 
 export interface TemplateDraft {
   id: string | null;

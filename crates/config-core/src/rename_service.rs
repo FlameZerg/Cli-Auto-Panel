@@ -1,11 +1,11 @@
 use crate::{
-    alias_service, discovery, files,
+    alias_service, config_groups, discovery, files,
     model::{ApplyPlan, AstResult, ConfigEntry, ImportedConfig, Inventory, Kind, PanelState, Paths, Result},
     profile_editor,
 };
 use std::path::Path;
 
-// 按新路径派生配置身份，保留模板应用快照、导入关系及原来的显示位置。
+// 按新路径派生配置身份，保留模板应用快照、导入关系、显示位置及分组归属。
 fn renamed_state(
     paths: &Paths, state: &PanelState, entry: &ConfigEntry, target: &Path, id: &str,
 ) -> Result<PanelState> {
@@ -27,7 +27,8 @@ fn renamed_state(
     let config_order = state.config_order.iter().map(|current| {
         if current == &entry.id { id.into() } else { current.clone() }
     }).collect();
-    Ok(PanelState { bindings, imports, config_order, ..state.clone() })
+    let config_groups = config_groups::rekey(state, &entry.id, Some(id));
+    Ok(PanelState { bindings, imports, config_order, config_groups, ..state.clone() })
 }
 
 pub fn rename(
@@ -78,6 +79,9 @@ pub fn rename(
         .chain(plan.files.iter().filter(|change| change.path != source).cloned())
         .chain(std::iter::once(removed)).collect();
     plan.after_state = state;
+    plan.identity_changes.push(crate::model::ConfigIdentityChange {
+        before: Some(entry.id.clone()), after: Some(id),
+    });
     plan.label = format!("重命名配置为「{filename}」并保存");
     plan.notices.push(format!(
         "配置将从 {} 迁移到 {}，同步更新 {} 个命令入口及模板绑定；未经 profile 声明的外部引用需手动更新。",

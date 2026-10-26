@@ -27,3 +27,5 @@ Microsoft.PowerShell_profile.ps1
 *.pfx
 *.p12
 backups/
+.claude/
+

@@ -1,5 +1,5 @@
 use crate::{
-    discovery, files::{self, Text},
+    config_groups, discovery, files::{self, Text},
     model::{Alias, ApplyPlan, AstResult, ConfigEntry, ImportedConfig, Kind, Paths, Result},
     profile_editor,
 };
@@ -87,6 +87,13 @@ pub fn delete_config(
     plan.after_state.imports.retain(|i| {
         discovery::managed_path(paths, Path::new(&i.path), i.kind)
             .map(|p| discovery::key(&p) != entry.id).unwrap_or(true)
+    });
+    // 真实删除时同步清理组成员；只移除别名入口时仍保留文件的分组关系。
+    plan.after_state.config_groups = config_groups::rekey(&plan.after_state, &entry.id, None);
+    plan.after_state.config_order = plan.after_state.config_order.iter()
+        .filter(|id| *id != &entry.id).cloned().collect();
+    plan.identity_changes.push(crate::model::ConfigIdentityChange {
+        before: Some(entry.id.clone()), after: None,
     });
     plan.notices.push(format!("原路径中的文件将真实删除，并移除 {} 个关联别名：{}。备份可用于恢复。未经 profile 声明的外部引用无法自动发现。",
         aliases.len(), aliases.iter().map(|a| a.name.as_str()).collect::<Vec<_>>().join("、")));

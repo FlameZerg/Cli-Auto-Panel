@@ -1,6 +1,6 @@
 use crate::{
-    alias_service, compatibility, discovery, rename_service,
-    files::{self, Text}, journal, merge_json, merge_toml,
+    alias_service, compatibility, discovery, rename_service, state,
+    files::{self, Text}, merge_json, merge_toml,
     model::*,
 };
 use std::path::Path;
@@ -212,18 +212,27 @@ fn create_alias(
     let id = alias_service::create(paths, plan, ast, profile, kind, launcher, name, &output)?;
     if inventory.configs.iter().any(|c| c.id == id) { return Err("配置目标已在管理清单中。".into()); }
     replace_binding(plan, &id, selected.as_ref(), files::hash(output.as_bytes()));
+    plan.identity_changes.push(ConfigIdentityChange { before: None, after: Some(id) });
     plan.label = "新建配置文件并注册别名".into();
     Ok(())
 }
 
-fn restore(paths: &Paths, plan: &mut ApplyPlan, id: &str) -> Result<()> {
-    let backup = journal::backup(&paths.data, id)?;
-    if serde_json::to_value(&backup.after_state).map_err(|e| e.to_string())?
-        != serde_json::to_value(&plan.before_state).map_err(|e| e.to_string())? {
+fn restore(plan: &mut ApplyPlan, backup: &ApplyPlan) -> Result<()> {
+    if backup.layout_snapshot && (plan.before_state.layout_revision != backup.after_state.layout_revision
+        || !state::same_layout(&plan.before_state, &backup.after_state)?) {
+        return Err("此操作含旧版全量布局快照，布局已有后续修改，禁止整份覆盖。".into());
+    }
+    let matches = if backup.format_version == 1 {
+        serde_json::to_value(state::legacy(&plan.before_state)).map_err(|e| e.to_string())?
+            == serde_json::to_value(&backup.after_state).map_err(|e| e.to_string())?
+    } else { state::same_business(&backup.after_state, &plan.before_state)? };
+    if !matches {
         return Err("只能撤销当前状态对应的最近一次操作，不能用旧备份覆盖后续修改。".into());
     }
     let mut files = Vec::new();
-    for old in backup.files {
+    for guard in &backup.guards { crate::journal::verify_guard(guard)?; }
+    // 撤销按发布顺序的逆序执行：先恢复旧配置，再切回入口，最后删除新配置。
+    for old in backup.files.iter().rev() {
         let bytes = old.before.as_deref().map(files::unpack).transpose()?;
         let change = files::capture(&old.path, bytes)?;
         if change.before != old.after {
@@ -232,21 +241,42 @@ fn restore(paths: &Paths, plan: &mut ApplyPlan, id: &str) -> Result<()> {
         files.push(change);
     }
     plan.files = files;
-    plan.after_state = backup.before_state;
-    plan.after_state.revision = plan.before_state.revision + 1;
+    plan.guards = backup.guards.clone();
+    let layout = if backup.format_version == 1 || backup.layout_snapshot {
+        let mut layout = state::layout(&backup.before_state);
+        if backup.format_version == 1 {
+            layout.template_order = backup.before_state.templates.iter().map(|template| template.id.clone()).collect();
+        }
+        layout
+    } else { state::restore_layout(&plan.before_state, backup) };
+    plan.after_state = state::compose(&backup.before_state, &layout);
+    plan.after_state.revision = state::next_revision(plan.before_state.revision)?;
+    plan.identity_changes = backup.identity_changes.iter().rev().map(|change| ConfigIdentityChange {
+        before: change.after.clone(), after: change.before.clone(),
+    }).collect();
+    plan.layout_snapshot = backup.format_version == 1 || backup.layout_snapshot;
     plan.label = format!("恢复：{}", backup.label);
     plan.notices.push("将撤销对应操作的配置、profile 和绑定状态；已有终端不会被重载。".into());
+    plan.notices.push(if plan.layout_snapshot {
+        "旧版全量布局按原恢复规则处理；此操作只有在布局未再修改时才能再次撤销。"
+    } else {
+        "保留后续布局调整；恢复已删除配置时，仅重新加入仍存在的原分组，否则归入未分组。"
+    }.into());
     Ok(())
 }
 
 pub fn prepare(
     paths: &Paths, state: PanelState, inventory: &Inventory, ast: &AstResult,
-    profile_hash: &str, request: ChangeRequest,
+    profile_hash: &str, request: ChangeRequest, backup: Option<&ApplyPlan>,
 ) -> Result<ApplyPlan> {
     if request.expected_revision != state.revision { return Err("界面状态已过期，请先刷新。".into()); }
-    // 模板库独立保存与删除只改数据库，不让失效文件或不可读 profile 锁死修复入口。
+    if request.expected_layout_revision != state.layout_revision {
+        return Err("界面布局已过期，请先刷新。".into());
+    }
+    // 独立模板维护无需依赖 profile；布局操作已由独立入口处理。
     let metadata_only = matches!(&request.change,
-        Change::DeleteTemplate { .. } | Change::SaveTemplate { sync_bindings: false, .. });
+        Change::DeleteTemplate { .. } | Change::SaveTemplate { sync_bindings: false, .. }
+        | Change::RestoreBackup { .. });
     let (profile, guards) = if metadata_only {
         (String::new(), Vec::new())
     } else {
@@ -261,11 +291,15 @@ pub fn prepare(
         }])
     };
     let mut plan = ApplyPlan {
+        format_version: 2,
         id: uuid::Uuid::new_v4().to_string(), label: String::new(),
         created_at: chrono::Utc::now().to_rfc3339(),
         before_state: state.clone(),
-        after_state: PanelState { revision: state.revision + 1, ..state },
+        after_state: PanelState { revision: state::next_revision(state.revision)?, ..state },
         files: guards,
+        guards: Vec::new(),
+        identity_changes: Vec::new(),
+        layout_snapshot: false,
         notices: Vec::new(),
     };
     match request.change {
@@ -314,82 +348,15 @@ pub fn prepare(
             plan.after_state.imports.push(ImportedConfig { path: resolved.to_string_lossy().into(), kind });
             plan.label = "手动导入已有配置（不自动绑定模板）".into();
         }
-        Change::RestoreBackup { id } => restore(paths, &mut plan, &id)?,
-        // 排序仅调整展示元数据，不触碰任何受管文件，也不改变绑定关系。
-        Change::ReorderTemplates { kind, order } => {
-            // 依据重排前的既有列表校验，保证传入顺序是当前集合的完整重排（快速失败，不做静默修补）。
-            let current: Vec<String> = plan.before_state.templates.iter()
-                .filter(|t| t.kind == kind).map(|t| t.id.clone()).collect();
-            let mut sorted = order.clone();
-            sorted.sort();
-            let mut expected = current.clone();
-            expected.sort();
-            if sorted != expected {
-                return Err("通用配置列表已变化，请刷新后重新排序。".into());
-            }
-            let rank: std::collections::HashMap<&str, usize> = order.iter()
-                .enumerate().map(|(index, id)| (id.as_str(), index)).collect();
-            let key = |t: &Template| rank.get(t.id.as_str()).copied().unwrap_or(usize::MAX);
-            let mut next: Vec<Template> = plan.after_state.templates.iter().filter(|t| t.kind == kind)
-                .cloned().collect();
-            next.sort_by_key(&key);
-            // 只替换同类型条目的槽位，其他产品页签中的模板相对顺序保持原状。
-            let position: Vec<usize> = plan.after_state.templates.iter().enumerate()
-                .filter(|(_, t)| t.kind == kind).map(|(index, _)| index).collect();
-            for (slot, template) in position.into_iter().zip(next) {
-                plan.after_state.templates[slot] = template;
-            }
-            let changed = serde_json::to_string(&plan.after_state.templates).map_err(|e| e.to_string())?
-                != serde_json::to_string(&plan.before_state.templates).map_err(|e| e.to_string())?;
-            if !changed { return Err("没有需要保存的变化。".into()); }
-            plan.label = "调整通用配置显示顺序".into();
-            plan.notices.push("仅调整侧栏显示顺序，不影响任何已保存内容或文件绑定。".into());
+        Change::RestoreBackup { id } => {
+            let backup = backup.filter(|backup| backup.id == id).ok_or("恢复计划缺少已校验的备份。")?;
+            restore(&mut plan, backup)?;
         }
-        Change::ReorderConfigs { order } => {
-            if order.is_empty() {
-                return Err("显示顺序不能为空。".into());
-            }
-            // 前端只提交当前产品页签的完整 id 集合（与 ReorderTemplates 的 kind 过滤语义一致）。
-            // 校验：order 中每个 id 都在清单里且同属一种类型，且恰好覆盖该类型的全部文件。
-            let mut kind_of: Option<Kind> = None;
-            for id in &order {
-                let entry = inventory.configs.iter().find(|c| &c.id == id)
-                    .ok_or("配置文件清单已变化，请刷新后重新排序。")?;
-                match kind_of {
-                    None => kind_of = Some(entry.kind),
-                    Some(k) if k != entry.kind => return Err("排序顺序混入了不同应用类型的文件。".into()),
-                    _ => {}
-                }
-            }
-            // 不使用 .into()：错误类型 E 由 ? 自动从 &str 转换为 Result 的 String，避免类型参数歧义。
-            let kind = kind_of.ok_or("显示顺序不能为空。")?;
-            let mut sorted = order.clone();
-            sorted.sort();
-            let mut expected: Vec<String> = inventory.configs.iter()
-                .filter(|c| c.kind == kind).map(|c| c.id.clone()).collect();
-            expected.sort();
-            if sorted != expected {
-                return Err("配置文件清单已变化，请刷新后重新排序。".into());
-            }
-            // 合并：本次类型使用最新顺序；其他类型的既有顺序原样保留在队尾，
-            // 未登记过的新文件按清单默认顺序追加，保证全局 configOrder 始终完整。
-            let mut merged = order.clone();
-            for id in &plan.before_state.config_order {
-                if !merged.iter().any(|m| m == id)
-                    && inventory.configs.iter().any(|c| &c.id == id && c.kind != kind) {
-                    merged.push(id.clone());
-                }
-            }
-            for entry in &inventory.configs {
-                if !merged.iter().any(|m| m == &entry.id) {
-                    merged.push(entry.id.clone());
-                }
-            }
-            plan.after_state.config_order = merged;
-            plan.label = "调整别名的配置文件显示顺序".into();
-            plan.notices.push("仅调整卡片显示顺序，不影响文件本身及模板绑定。".into());
-        }
+        Change::ReorderTemplates { .. } | Change::ReorderConfigs { .. }
+        | Change::SaveConfigGroup { .. } | Change::DeleteConfigGroup { .. }
+        | Change::AssignConfigGroup { .. } => return Err("布局操作必须使用轻量保存入口。".into()),
     }
+    plan.after_state = state::finish_layout(&plan.before_state, &plan.after_state)?;
     plan.notices.sort();
     plan.notices.dedup();
     let mut comparable = plan.after_state.clone();
@@ -399,5 +366,21 @@ pub fn prepare(
     if same_state && plan.files.iter().all(|f| f.before == f.after) {
         return Err("没有需要保存的变化。".into());
     }
+    compact_guards(plan)
+}
+
+fn compact_guards(mut plan: ApplyPlan) -> Result<ApplyPlan> {
+    // 计划生成后才压缩只读守卫，避免破坏别名编辑所需的 profile 原始上下文。
+    let mut writes = Vec::new();
+    for change in plan.files {
+        if change.before == change.after {
+            plan.guards.push(FileGuard {
+                path: change.path,
+                hash: change.before.as_deref().map(files::unpack).transpose()?.map(|bytes| files::hash(&bytes)),
+                identity: change.before_identity,
+            });
+        } else { writes.push(change); }
+    }
+    plan.files = writes;
     Ok(plan)
 }
