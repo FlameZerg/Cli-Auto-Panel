@@ -37,8 +37,11 @@ async fn extract_common(app: tauri::AppHandle, kind: Kind, content: String) -> s
 #[tauri::command]
 async fn preview_merge(
     app: tauri::AppHandle, kind: Kind, content: String, template: Option<String>, config_id: Option<String>,
+    merge_priority: MergePriority,
 ) -> std::result::Result<String, String> {
-    access(app, move |engine| engine.preview_merge(kind, &content, template.as_deref(), config_id.as_deref())).await
+    // 优先级作为显式预览参数传递，切换草稿时无需先写入绑定状态。
+    access(app, move |engine| engine.preview_merge(kind, &content, template.as_deref(), config_id.as_deref(),
+        merge_priority)).await
 }
 
 #[tauri::command]
@@ -47,7 +50,12 @@ async fn prepare_change(app: tauri::AppHandle, request: ChangeRequest) -> std::r
 }
 
 #[tauri::command]
-async fn commit_change(app: tauri::AppHandle, id: String) -> std::result::Result<Bootstrap, String> {
+async fn update_layout(app: tauri::AppHandle, request: ChangeRequest) -> std::result::Result<LayoutOutcome, String> {
+    access(app, move |engine| engine.update_layout(request)).await
+}
+
+#[tauri::command]
+async fn commit_change(app: tauri::AppHandle, id: String) -> std::result::Result<CommitOutcome, String> {
     access(app, move |engine| engine.commit(&id)).await
 }
 
@@ -70,7 +78,7 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             bootstrap, read_config, extract_common, preview_merge, prepare_change,
-            commit_change, recover_pending
+            update_layout, commit_change, recover_pending
         ])
         .build(tauri::generate_context!());
     if let Err(error) = application.and_then(|app| {

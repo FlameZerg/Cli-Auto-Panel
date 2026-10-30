@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useRef } from "react";
 import { basicSetup } from "codemirror";
-import { EditorView, keymap } from "@codemirror/view";
+import { EditorView } from "@codemirror/view";
 import { Compartment, EditorState } from "@codemirror/state";
 import { json } from "@codemirror/lang-json";
 import { StreamLanguage } from "@codemirror/language";
 import { toml } from "@codemirror/legacy-modes/mode/toml";
-import { highlightSelectionMatches, searchKeymap, openSearchPanel } from "@codemirror/search";
 import { useTheme } from "../theme";
+import { InlineNotice } from "./InlineNotice";
+import { editorSearch } from "./editorSearch";
 import { buildLineDiff } from "../features/preview/lineDiff";
 import { createInlineDiffDecorations, inlineDiffField, setInlineDiff } from "../features/preview/inlineDiff";
 import type { Kind } from "../types";
@@ -19,7 +20,6 @@ interface Props {
   label?: string;
   diff?: {
     after: string | null;
-    label: string;
     loading: boolean;
     error: string;
   };
@@ -40,8 +40,6 @@ export function CodeEditor({ value, kind, onChange, readOnly = false, label = "�
     try { return { lines: buildLineDiff(value, diff.after), error: "" }; }
     catch (failure) { return { lines: null, error: String(failure) }; }
   }, [value, diff?.after, diff?.loading, diff?.error]);
-  const added = result.lines?.filter((line) => line.kind === "add").length ?? 0;
-  const removed = result.lines?.filter((line) => line.kind === "remove").length ?? 0;
   const diffError = diff?.error || result.error;
   callback.current = onChange;
   initialValue.current = value;
@@ -54,15 +52,8 @@ export function CodeEditor({ value, kind, onChange, readOnly = false, label = "�
       extensions: [
         basicSetup,
         inlineDiffField,
-        // Ctrl+F 搜索面板与选区匹配高亮：与 cc-switch 的内建搜索行为一致。
-        // searchKeymap 提供 Ctrl-F / F3 / Shift-F3 / Ctrl-Shift-L 等全套绑定；
-        // Mod-f 兜底确保面板一定能呼出（openSearchPanel 已在 searchKeymap 内，
-        // 这里仅在面板未开时强制打开，避免与其他扩展冲突）。
-        keymap.of([
-          ...searchKeymap,
-          { key: "Mod-f", run: (v) => openSearchPanel(v) },
-        ]),
-        highlightSelectionMatches(),
+        // 沿用 basicSetup 的搜索快捷键与选区高亮，仅补充字面量搜索和中文界面。
+        editorSearch,
         kind === "claude" ? json() : StreamLanguage.define(toml),
         readOnlyCompartment.current.of([
           EditorView.editable.of(!readOnly),
@@ -137,17 +128,9 @@ export function CodeEditor({ value, kind, onChange, readOnly = false, label = "�
     editor.dispatch({ effects: setInlineDiff.of(createInlineDiffDecorations(editor.state, lines ?? [])) });
   }, [value, result.lines, kind, label, dark]);
 
-  return <div className={`code-editor-shell${diff ? " has-inline-diff" : ""}`} aria-busy={diff?.loading}>
-    {diff && <div className="inline-diff-heading">
-      <div className="diff-heading"><span>{diff.label}</span>
-        {result.lines && <span className="diff-legend">
-          <span className="diff-removed">−{removed} 删除</span>
-          <span className="diff-added">+{added} 增加</span>
-        </span>}</div>
-      {diff.loading && <p className="inline-diff-status muted" role="status">正在生成通用配置差异…</p>}
-      {diffError && <p className="inline-diff-error" role="alert">通用配置差异无法生成：{diffError}</p>}
-      {result.lines && !added && !removed && <p className="inline-diff-status muted">没有代码内容变化。</p>}
-    </div>}
+  return <div className="code-editor-shell" aria-busy={diff?.loading}>
+    {/* 移除共享配置说明栏，仅在差异运算真实失败时保留错误。 */}
+    <InlineNotice messages={[diffError]} tone="error" />
     <div className="code-editor" ref={host} />
   </div>;
 }

@@ -5,6 +5,16 @@ use crate::{
 };
 use std::path::Path;
 
+// 新建与已有配置切换共用命令映射，确保两个入口指向同一个真实文件。
+pub(crate) fn codex_commands(launcher: &str, name: &str) -> Result<Vec<String>> {
+    match launcher {
+        "codex" => Ok(vec![format!("codex-{name}")]),
+        "codexnew" => Ok(vec![format!("codexnew-{name}")]),
+        "both" => Ok(vec![format!("codex-{name}"), format!("codexnew-{name}")]),
+        _ => Err("不支持的 Codex 启动版本。".into()),
+    }
+}
+
 pub fn plan_profile(
     paths: &Paths, plan: &mut ApplyPlan, updated: &str,
 ) -> Result<()> {
@@ -35,9 +45,7 @@ pub fn create(
         return Err("目标配置文件已经存在，不能通过新建入口覆盖。".into());
     }
     let command_names = match (kind, launcher) {
-        (Kind::Codex, "codex") => vec![format!("codex-{name}")],
-        (Kind::Codex, "codexnew") => vec![format!("codexnew-{name}")],
-        (Kind::Codex, "both") => vec![format!("codex-{name}"), format!("codexnew-{name}")],
+        (Kind::Codex, launcher) => codex_commands(launcher, name)?,
         (Kind::Claude, "claude") => vec![format!("claude-{name}")],
         _ => return Err("启动版本与应用类型不匹配。".into()),
     };
@@ -90,6 +98,11 @@ pub fn delete_config(
     });
     // 真实删除时同步清理组成员；只移除别名入口时仍保留文件的分组关系。
     plan.after_state.config_groups = config_groups::rekey(&plan.after_state, &entry.id, None);
+    plan.after_state.config_order = plan.after_state.config_order.iter()
+        .filter(|id| *id != &entry.id).cloned().collect();
+    plan.identity_changes.push(crate::model::ConfigIdentityChange {
+        before: Some(entry.id.clone()), after: None,
+    });
     plan.notices.push(format!("原路径中的文件将真实删除，并移除 {} 个关联别名：{}。备份可用于恢复。未经 profile 声明的外部引用无法自动发现。",
         aliases.len(), aliases.iter().map(|a| a.name.as_str()).collect::<Vec<_>>().join("、")));
     Ok(())

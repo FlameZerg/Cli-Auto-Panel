@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { api } from "./api";
+import { InlineNotice } from "./components/InlineNotice";
 import { useDragSort } from "./features/drag/useDragSort";
 import { ConfigEditor } from "./features/aliases/ConfigEditor";
 import { ConfigGroups } from "./features/aliases/ConfigGroups";
@@ -9,7 +10,7 @@ import { ImportForm } from "./features/aliases/ImportForm";
 import { TemplateEditor } from "./features/common-config/TemplateEditor";
 import { PreviewDialog } from "./features/preview/PreviewDialog";
 import { useTheme } from "./theme";
-import type { Bootstrap, Change, ConfigDraft, ConfigEntry, Kind, Preview, TemplateDraft } from "./types";
+import type { Bootstrap, Change, CodexLauncher, ConfigDraft, ConfigEntry, Kind, Preview, TemplateDraft } from "./types";
 
 type Page = "welcome" | "template" | "config" | "create" | "import" | "history";
 
@@ -84,8 +85,13 @@ export function App() {
 
   const disabled = !data || !!busy || organizing || !!data.pendingRecovery;
   const entry = data?.inventory.configs.find((c) => c.id === selected);
-  // 模板显示顺序：后端排序直接重排状态库中的 templates 数组，前端沿用数组顺序，不再二次排序。
-  const templates = data?.state.templates.filter((t) => t.kind === kind) || [];
+  // 模板顺序属于布局，不能通过重排业务正文制造完整配置备份。
+  const templates = (() => {
+    const base = data?.state.templates.filter((t) => t.kind === kind) || [];
+    const rank = new Map((data?.state.templateOrder ?? []).map((id, index) => [id, index]));
+    return [...base].sort((a, b) => (rank.get(a.id) ?? Number.MAX_SAFE_INTEGER)
+      - (rank.get(b.id) ?? Number.MAX_SAFE_INTEGER));
+  })();
   // 别名配置显示顺序：configOrder 全局一份（跨产品页签共享）；未登记的项目按默认顺序排在末尾。
   const configs = (() => {
     // 保留当前产品的全量顺序，搜索过滤交给分组列表，避免组内排序提交不完整集合。
@@ -97,11 +103,16 @@ export function App() {
   })();
   const configCount = configs.filter((config) =>
     `${config.aliases.join(" ")} ${config.path}`.toLowerCase().includes(search.trim().toLowerCase())).length;
+  // 全局状态、错误及操作警告共享一行；完整上下文通过悬停查看，不堆叠占用高度。
+  const statusMessages = [
+    data?.pendingRecovery ? "检测到未完成的写入，请先检查并恢复。" : "",
+    error, busy, message, ...operationNotices, ...(data?.inventory.warnings ?? []),
+  ];
 
   // —— 拖拽排序（零依赖）———————————————————————————————————————————
   // 排序仅在完整列表视图下允许；搜索过滤中的顺序不具备完整语义，直接禁用（快速失败，不做静默猜测）。
   const dragEnabled = !disabled && !search.trim();
-  // 模板排序提交：基于当前 kind 的完整列表顺序生成 Change，由既有 prepare/commit 管线静默落盘。
+  // 模板排序只走独立布局入口，不再触发配置恢复日志。
   const templateDrag = useDragSort(templates, (t) => t.id, dragEnabled,
     (order) => applyChange({ type: "reorderTemplates", kind, order }, false, templateDrag.cancel));
 
@@ -142,8 +153,10 @@ export function App() {
     const name = target.kind === "codex" ? filename.slice(7, -5) : filename.slice(9, -5);
     // 读取成功后再一次性切换条目，避免异步读取期间卸载当前编辑器造成画面闪烁。
     setSelected(target.id); setPage("config"); setDirty(false);
+    // 旧绑定省略优先级时保持原有行为，其他绑定恢复各自已保存的选择。
     setConfigDraft({ id: target.id, name, content: document.content, hash: document.hash,
-      notices: document.notices, templateId: binding?.templateId || null });
+      notices: document.notices, templateId: binding?.templateId || null,
+      mergePriority: binding?.mergePriority ?? "current" });
   }
 
   function chooseEntry(target: ConfigEntry) {
@@ -155,19 +168,22 @@ export function App() {
   function applyChange(change: Change, previewOnly = false, onReorderFailure?: () => void, onLayoutSaved?: () => void) {
     if (!data || disabled || busyRef.current) { onReorderFailure?.(); return; }
     // 分组与排序共用互斥的静默提交，不清空编辑器草稿或未保存标记。
-    // 失败时取消乐观排序并重新读取真实状态，恢复状态未读取成功前不允许继续写入。
+    // 未获得回执时取消乐观排序并读取真实状态；不能把响应失败等同于确定未提交。
     if (change.type === "reorderTemplates" || change.type === "reorderConfigs"
       || change.type === "saveConfigGroup" || change.type === "deleteConfigGroup" || change.type === "assignConfigGroup") {
       void perform("保存列表布局…", async () => {
         setOrganizing(true);
         try {
-          const plan = await api.prepare(data.state.revision, change);
-          const result = await api.commit(plan.id);
-          setData(result);
+          const result = await api.updateLayout(data.state.revision, data.state.layoutRevision ?? 0, change);
+          // 索引失败显式标记不可用并移除未核验的恢复入口，不把它当作真实空历史。
+          setData({ ...data, history: result.history ?? [], historyError: result.historyError, state: { ...data.state,
+            layoutRevision: result.layoutRevision, configOrder: result.configOrder,
+            templateOrder: result.templateOrder, configGroups: result.configGroups } });
           onLayoutSaved?.();
+          if (result.historyError) setError(result.historyError);
         } catch (failure) {
           onReorderFailure?.();
-          await refreshAfterFailure(new Error(`列表布局操作失败，请以刷新后的清单为准：${String(failure)}`));
+          await refreshAfterFailure(new Error(`列表布局未获得成功回执，请先确认刷新后的结果，勿直接重复保存：${String(failure)}`));
         } finally {
           setOrganizing(false);
         }
@@ -176,7 +192,7 @@ export function App() {
     }
     // 预览只在主动点击时显示；普通保存和删除沿用同一计划后直接提交。
     void perform(previewOnly ? "生成差异预览…" : "执行配置操作…", async () => {
-      const result = await api.prepare(data.state.revision, change);
+      const result = await api.prepare(data.state.revision, change, data.state.layoutRevision ?? 0);
       if (previewOnly) {
         setPreparedChange(change); setPreview(result);
       } else {
@@ -198,17 +214,32 @@ export function App() {
 
   async function commitPlan(plan: Preview, change: Change) {
     let result: Bootstrap;
+    let warnings: string[] = [];
     try {
-      result = await api.commit(plan.id);
+      const outcome = await api.commit(plan.id);
+      warnings = outcome.warnings;
+      if (!outcome.snapshot) {
+        // 已提交但刷新失败：停用后续修改，保留明确回执，不将操作重新提交。
+        setData(null); setPreview(null); setPreparedChange(null);
+        if (change.type !== "setCodexLauncher") setDirty(false);
+        setMessage(`操作已落盘，操作编号：${outcome.id}。请刷新清单，无需重复保存。`);
+        setError([outcome.refreshError, ...warnings].filter(Boolean).join("；"));
+        return;
+      }
+      result = outcome.snapshot;
     } catch (failure) {
       setPreview(null); setPreparedChange(null);
       return refreshAfterFailure(failure);
     }
-    setData(result); setPreview(null); setPreparedChange(null); setDirty(false);
+    setData(result); setPreview(null); setPreparedChange(null);
+    // 即时版本切换不提交也不清空编辑草稿，未保存标记必须原样保留。
+    if (change.type !== "setCodexLauncher") setDirty(false);
     sequence.current += 1;
     // 落盘已完成，后续编辑器重读失败不能被当作提交失败或引导重复执行。
     try {
-      if (change.type === "saveTemplate") {
+      if (change.type === "setCodexLauncher") {
+        // 只刷新命令标签与列表，编辑器内容、选区和文件哈希基线保持不变。
+      } else if (change.type === "saveTemplate") {
         const template = result.state.templates.find((t) => change.id ? t.id === change.id : t.kind === change.kind && t.name === change.name.trim());
         if (template) openTemplate({ ...template });
       } else if (change.type === "saveConfig") {
@@ -225,16 +256,16 @@ export function App() {
         const prefix = change.kind === "claude" ? "claude" : change.launcher === "codexnew" ? "codexnew" : "codex";
         const target = result.inventory.configs.find((c) => c.aliases.includes(`${prefix}-${change.name}`));
         if (target) await loadEntry(target, result);
-      } else if (change.type === "reorderTemplates" || change.type === "reorderConfigs") {
-        // 排序操作不涉及任何编辑器草稿：保持当前页面与草稿不动，只静默接收新状态。
-        setMessage("");
       } else {
         setSelected(null); setPage("welcome"); setConfigDraft(null); setTemplateDraft(null);
       }
     } catch (failure) {
       throw new Error(`操作已落盘，但编辑内容重新载入失败：${String(failure)}。请重新载入或刷新清单，无需重复提交。`);
     } finally {
-      setMessage("操作已落盘并通过保存链路回读校验。");
+      setMessage(warnings.length
+        ? `操作已落盘，但存在待处理事项：${warnings.join("；")}`
+        : change.type === "saveTemplate" ? plan.label
+          : change.type === "setCodexLauncher" ? "启动版本已切换，新开的 PowerShell 终端生效。" : "已保存。");
       setOperationNotices(plan.notices);
     }
   }
@@ -259,13 +290,20 @@ export function App() {
     }, true);
   }
 
-  function saveTemplate(previewOnly = false, syncBindings = true) {
-    if (templateDraft) applyChange({ type: "saveTemplate", ...templateDraft, syncBindings }, previewOnly);
+  function saveTemplate(previewOnly = false) {
+    if (templateDraft) applyChange({ type: "saveTemplate", ...templateDraft }, previewOnly);
   }
 
   function saveConfig(previewOnly = false) {
     if (entry && configDraft) applyChange({ type: "saveConfig", id: entry.id, name: configDraft.name, content: configDraft.content,
-      templateId: configDraft.templateId, expectedHash: configDraft.hash }, previewOnly);
+      templateId: configDraft.templateId, mergePriority: configDraft.mergePriority,
+      expectedHash: configDraft.hash }, previewOnly);
+  }
+
+  function switchCodexLauncher(launcher: CodexLauncher) {
+    if (entry && configDraft) applyChange({
+      type: "setCodexLauncher", id: entry.id, launcher, expectedHash: configDraft.hash,
+    });
   }
 
   function refresh() {
@@ -323,18 +361,13 @@ export function App() {
         {dirty && <span className="draft-indicator">草稿未保存</span>}
         <ThemeToggle />
         <button disabled={!!busy || organizing} onClick={refresh}>刷新清单</button></div></header>
-      {busy && <div className="progress" role="status">{busy}</div>}
-      {error && <div className="error-box" role="alert">{error}<button className="quiet" onClick={() => setError("")}>关闭提示</button></div>}
-      {message && <div className="success-box" role="status">{message}<button className="quiet" onClick={() => setMessage("")}>关闭提示</button></div>}
-      {operationNotices.length > 0 && <div className="notice global-notice" role="status">
-        {operationNotices.map((notice) => <div key={notice}>{notice}</div>)}
-        <button className="quiet" onClick={() => setOperationNotices([])}>关闭操作提示</button>
-      </div>}
-      {data?.pendingRecovery && <div className="error-box">
-        <strong>检测到上次未完成的写入，所有新修改已暂停。</strong><p>恢复前会核对全部文件；遇到外部新内容时会停止，不强制覆盖。</p>
-        <button className="danger" disabled={!!busy} onClick={recover}>检查并恢复</button></div>}
-      {data?.inventory.warnings.filter((warning) => !warning.startsWith("存在失去入口的绑定")).map((warning) =>
-        <div className="notice global-notice" key={warning}>{warning}</div>)}
+      <div className="status-bar"><InlineNotice messages={statusMessages}
+        tone={error || data?.pendingRecovery ? "error"
+          : operationNotices.length || data?.inventory.warnings.length ? "notice" : "success"}
+        actions={data?.pendingRecovery
+          ? <button className="danger" disabled={!!busy} onClick={recover}>检查并恢复</button>
+          : (error || message || operationNotices.length > 0) && <button className="quiet"
+            onClick={() => { setError(""); setMessage(""); setOperationNotices([]); }}>关闭</button>} /></div>
       {!data ? <div className="welcome"><h2>{busy ? "正在读取本地配置…" : "面板尚未就绪"}</h2>
         <p>需要读取指定的 PowerShell profile。不会执行其中的命令，也不会自动改写已有配置。</p>
         {!busy && <button onClick={refresh}>重试读取</button>}</div> :
@@ -349,7 +382,7 @@ export function App() {
           </section>
           <section className="editor-column">
             {page === "welcome" && <div className="welcome"><span className="welcome-label">{kind === "codex" ? "TOML" : "JSON"}</span>
-              <h2>一份偏好，多份配置</h2><p>从左侧选择配置文件，或创建一份通用配置。<br />模板优先覆盖同名项，其他个别设置保留。</p>
+              <h2>一份偏好，多份配置</h2><p>从左侧选择配置文件，或创建一份通用配置。</p>
               <div className="welcome-steps"><div><b>01</b>编辑通用片段</div><div><b>02</b>为文件选择模板</div><div><b>03</b>保存并同步</div></div>
               <p className="muted">新建 / 删除别名会精确维护 PowerShell profile；已有终端与会话不会被重载或终止。</p></div>}
             {page === "template" && templateDraft && <TemplateEditor draft={templateDraft}
@@ -358,7 +391,6 @@ export function App() {
               onChange={(draft) => { setTemplateDraft(draft); setDirty(true); }}
               onExtract={() => extractContent(templateDraft.content, "template")}
               onSave={() => saveTemplate()} onPreview={() => saveTemplate(true)}
-              onSaveOnly={() => saveTemplate(false, false)}
               onDelete={() => templateDraft.id && applyChange({ type: "deleteTemplate", id: templateDraft.id }, true)}
               onCopy={() => openTemplate({ ...templateDraft, id: null, name: `${templateDraft.name} - 副本` })} />}
             {page === "config" && entry && <ConfigEditor entry={entry} draft={configDraft} data={data}
@@ -367,6 +399,7 @@ export function App() {
               onReload={() => chooseEntry(entry)}
               onExtract={() => { if (configDraft) navigate(() => extractContent(configDraft.content, "new")); }}
               onSave={() => saveConfig()} onPreview={() => saveConfig(true)}
+              onLauncherChange={switchCodexLauncher}
               onDelete={() => applyChange({ type: "deleteConfig", id: entry.id, expectedHash: configDraft?.hash || entry.hash || "" })}
               onRemoveAlias={(name) => applyChange({ type: "removeAlias", name })} />}
             {page === "create" && <CreateAliasForm key={`create-${kind}`} kind={kind} data={data} disabled={disabled}
@@ -374,13 +407,14 @@ export function App() {
             {page === "import" && <ImportForm key={`import-${kind}`} kind={kind} data={data} disabled={disabled}
               onSubmit={applyChange} onDirty={() => setDirty(true)} />}
             {page === "history" && <div className="form-section"><span className="eyebrow">LOCAL BACKUPS</span><h2>备份与恢复</h2>
-              <p className="notice">只允许恢复当前状态对应的最近操作，避免覆盖后续修改；
-                其他记录仍保留在本地，不自动删除。</p><p className="file-path">{data.dataPath}</p>
-              {data.history.map((history) => <div className="history-row" key={history.id}><div><strong>{history.label}</strong>
-                <small>{new Date(history.createdAt).toLocaleString("zh-CN")}</small></div>
+              <InlineNotice messages={["最多保留 20 条配置备份；恢复前检查外部改动，排序及分组独立保存。"]} />
+              <p className="file-path" title={data.dataPath}>{data.dataPath}</p>
+              <InlineNotice tone="error" messages={[data.historyError]} />
+              {!data.historyError && data.history.map((history) => <div className="history-row" key={history.id}><div><strong>{history.label}</strong>
+                <small>{history.legacy ? "旧版备份 · " : ""}{new Date(history.createdAt).toLocaleString("zh-CN")}</small></div>
                 <button disabled={disabled || !history.canRestore} onClick={() => applyChange({ type: "restoreBackup", id: history.id })}>
                   {history.canRestore ? "恢复此操作" : "后续已有修改"}</button></div>)}
-              {!data.history.length && <p className="empty-small">尚无已完成操作的备份。首次保存时自动创建。</p>}</div>}
+              {!data.historyError && !data.history.length && <p className="empty-small">尚无已完成操作的备份。首次保存时自动创建。</p>}</div>}
           </section>
         </div>}
       {data && <footer className="app-footer"><span title={data.profilePath}>PowerShell：{data.profilePath}</span>

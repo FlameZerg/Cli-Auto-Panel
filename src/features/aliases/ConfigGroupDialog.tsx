@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { Modal } from "../../components/Modal";
+import { InlineNotice } from "../../components/InlineNotice";
 import type { ConfigGroup, ConfigGroupChange, Kind } from "../../types";
 
 export type GroupAction =
@@ -48,9 +49,9 @@ export function ConfigGroupDialog({ action, kind, groups, disabled, saving, erro
       : <form onSubmit={(event) => { event.preventDefault(); submit(); }}>
         <label>分组名称<input autoFocus value={name} disabled={disabled} placeholder="例如：工作项目、个人项目"
           onChange={(event) => setName(event.target.value)} /></label>
-        {validation && <p className="group-validation">{validation}</p>}
+        {validation && <p className="group-validation" title={validation}>{validation}</p>}
       </form>}
     {/* 失败信息直接展示在弹窗内，避免被遮罩挡住；重新打开时不展示上次遗留的错误。 */}
-    {submitted && error && <p className="error-box" role="alert">{error}</p>}
+    <InlineNotice tone="error" messages={[submitted ? error : ""]} />
   </Modal>;
 }

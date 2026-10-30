@@ -106,7 +106,8 @@
   --button-text: #2c3646;
 }
 * { box-sizing: border-box; }
-body { margin: 0; min-width: 1020px; }
+/* 页面本身不滚动，滚轮仅交给各列内部的独立滚动区域。 */
+body { margin: 0; min-width: 1020px; overflow: hidden; }
 button, input, select { font: inherit; }
 button { color: var(--button-text); background: var(--bg-control); border: 1px solid var(--border-control); border-radius: 7px; padding: 8px 13px; cursor: pointer; font-size: 12px; }
 button:hover:not(:disabled) { background: var(--bg-control-hover); border-color: var(--border-control-hover); }
@@ -132,8 +133,10 @@ p { font-size: 13px; line-height: 1.9; }
 .accent { color: var(--accent); }
 .danger-text { color: var(--danger-alert-text); }
 .eyebrow { color: var(--eyebrow-text); font-size: 10px; letter-spacing: 1.8px; }
-.app-shell { display: flex; min-height: 100vh; }
-.rail { width: 230px; min-width: 230px; background: var(--bg-rail); border-right: 1px solid var(--line); padding: 27px 16px 16px; display: flex; flex-direction: column; height: 100vh; position: sticky; top: 0; }
+.app-shell { display: flex; height: 100vh; overflow: hidden; }
+.rail { width: 230px; min-width: 230px; background: var(--bg-rail); border-right: 1px solid var(--line); padding: 27px 16px 16px; display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
+/* 固定侧栏标题和操作区，只让通用配置列表占用剩余高度并独立滚动。 */
+.rail > :not(.template-list) { flex-shrink: 0; }
 .brand { display: flex; align-items: center; gap: 11px; margin: 0 6px 29px; }
 .brand-mark { border: 1px solid var(--brand-border); border-radius: 11px; background: linear-gradient(145deg, var(--brand-grad-a), var(--brand-grad-b)); color: var(--brand-text); font-size: 12px; padding: 12px 8px; font-weight: 700; }
 .brand strong { display: block; font-size: 17px; letter-spacing: .3px; }
@@ -143,31 +146,37 @@ p { font-size: 13px; line-height: 1.9; }
 .product-tabs button.active { background: var(--tab-active-bg); color: var(--tab-active-text); }
 .sidebar-heading { display: flex; align-items: center; justify-content: space-between; color: var(--sidebar-heading-text); font-size: 11px; margin: 0 5px 10px; }
 .sidebar-heading button { border: none; padding: 5px 8px; font-size: 11px; color: var(--heading-btn-text); background: var(--heading-btn-bg); }
-.template-list { display: flex; flex-direction: column; gap: 6px; overflow-y: auto; }
-.template-list button { text-align: left; display: flex; flex-direction: column; gap: 8px; background: none; border-color: transparent; padding: 12px; font-size: 13px; overflow-wrap: anywhere; }
+.template-list { display: flex; flex-direction: column; gap: 6px; flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior-y: contain; }
+.template-list button { text-align: left; display: flex; flex-direction: column; gap: 8px; flex-shrink: 0; background: none; border-color: transparent; padding: 12px; font-size: 13px; overflow-wrap: anywhere; }
 .template-list button small { color: var(--tab-list-small); font-size: 10px; }
 .template-list button.selected { background: var(--list-selected-bg); border-color: var(--list-selected-border); color: var(--list-selected-text); }
 .sidebar-empty { color: var(--sidebar-empty-text); font-size: 12px; padding: 8px; line-height: 2; }
 .sidebar-bottom { margin-top: auto; padding-top: 20px; display: flex; flex-direction: column; gap: 8px; }
 .sidebar-bottom button { text-align: left; background: var(--bg-rail-button); }
-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+/* 允许主区域和网格收缩到窗口剩余高度，避免长列表或表单撑高整页。 */
+main { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+main > :not(.workspace):not(.welcome) { flex-shrink: 0; }
+main > .welcome { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior-y: contain; }
 .topbar { padding: 25px 30px; display: flex; align-items: center; justify-content: space-between; min-height: 107px; border-bottom: 1px solid var(--line); }
 .topbar-actions { display: flex; align-items: center; gap: 14px; }
 .draft-indicator { font-size: 11px; color: var(--draft-text); }
-.workspace { display: grid; grid-template-columns: 290px minmax(0, 1fr); flex: 1; }
-.config-column { border-right: 1px solid var(--line); background: var(--bg-column); display: flex; flex-direction: column; min-width: 0; }
+.workspace { display: grid; grid-template-columns: 290px minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); flex: 1; min-height: 0; overflow: hidden; }
+.config-column { border-right: 1px solid var(--line); background: var(--bg-column); display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; }
+/* 搜索、分组工具栏和文件统计保持可见，别名配置列表单独滚动。 */
+.config-column > :not(.config-list) { flex-shrink: 0; }
 .column-title { display: flex; align-items: center; justify-content: space-between; padding: 22px 19px 14px; }
 .column-title h2 { margin: 0; font-size: 13px; color: var(--col-title-text); }
 .column-title > span { font-size: 10px; background: var(--col-title-count-bg); padding: 3px 7px; border-radius: 4px; color: var(--col-title-count-text); }
 .search { margin: 0 14px 15px; font-size: 11px; }
-.config-list { padding: 0 10px 20px; display: flex; flex-direction: column; gap: 8px; }
+.config-list { padding: 0 10px 20px; display: flex; flex-direction: column; gap: 8px; flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior-y: contain; }
+.config-list > * { flex-shrink: 0; }
 /* 分组使用独立边框和标题包裹关联卡片，颜色沿用语义变量以兼容深浅主题。 */
 .config-groups-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 0 14px 12px; }
 .config-groups-toolbar > span { font-size: 11px; color: var(--muted); }
 .config-groups-toolbar > button { padding: 5px 8px; font-size: 11px; }
 .config-group { min-width: 0; border: 1px solid var(--border-control); border-radius: 9px; background: var(--surface); }
 .config-group-heading { display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 10px 8px; border-bottom: 1px solid var(--line); }
-.config-group-heading h3 { min-width: 0; margin: 0; color: var(--col-title-text); font-size: 12px; font-weight: 600; overflow-wrap: anywhere; }
+.config-group-heading h3 { min-width: 0; margin: 0; color: var(--col-title-text); font-size: 16px; font-weight: 700; overflow-wrap: anywhere; }
 .config-group-heading h3 > span { margin-left: 6px; font-size: 10px; font-weight: 400; color: var(--muted); }
 .config-group-actions { display: flex; flex-shrink: 0; }
 .config-group-actions > button { padding: 4px; font-size: 10px; }
@@ -178,8 +187,7 @@ main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 .config-card-shell .config-card { width: 100%; min-width: 0; padding: 12px 9px; border: none; border-radius: 7px 7px 0 0; }
 .config-card-shell label.config-group-select { display: flex; flex-direction: row; align-items: center; gap: 7px; padding: 7px 9px; border-top: 1px solid var(--line); font-size: 10px; color: var(--muted); }
 .config-group-select select { flex: 1; width: 0; padding: 5px 6px; font-size: 10px; }
-.group-validation { margin: 8px 0 0; color: var(--muted); font-size: 11px; }
-.modal-content .error-box { margin: 0; }
+.group-validation { margin: 8px 0 0; color: var(--muted); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .config-card { text-align: left; padding: 15px 12px; background: var(--card-bg); border: 1px solid var(--card-border); display: flex; flex-direction: column; gap: 12px; border-radius: 8px; }
 .config-card.selected { background: var(--card-selected-bg); border-color: var(--card-selected-border); box-shadow: inset 2px 0 var(--card-selected-bar); }
 /* 拖拽排序的状态反馈：拖动中的卡片半透明，悬停目标上边缘出现插入指示线。
@@ -198,7 +206,8 @@ main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 .card-path { color: var(--card-path-text); font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .card-template { color: var(--card-template-text); font-size: 10px; line-height: 1.7; }
 .column-footer { margin-top: auto; padding: 15px; border-top: 1px solid var(--line); font-size: 10px; color: var(--column-footer-text); }
-.editor-column { min-width: 0; background: var(--bg-editor-col); }
+/* 右侧所有配置页面共用独立滚动区，滚动到底部或顶部也不带动其他列。 */
+.editor-column { min-width: 0; min-height: 0; overflow-y: auto; overscroll-behavior-y: contain; background: var(--bg-editor-col); }
 .form-section { padding: 29px; display: flex; flex-direction: column; gap: 18px; }
 .form-section > p { margin-bottom: 0; }
 .form-section > h2 { margin-bottom: 0; }
@@ -206,41 +215,34 @@ main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 .section-title h2 { margin: 7px 0 0; line-height: 1.6; overflow-wrap: anywhere; }
 .tag { flex-shrink: 0; border: 1px solid var(--tag-border); background: var(--tag-bg); color: var(--tag-text); padding: 6px 9px; border-radius: 5px; font-size: 10px; }
 .form-row { display: flex; gap: 14px; }
-.form-row > label { flex: 1; }
+.form-row > label { flex: 1; min-width: 0; }
 .binding-row { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; padding: 15px; border: 1px solid var(--binding-border); border-radius: 8px; background: var(--binding-bg); }
 .binding-row select { max-width: 260px; flex: 1; }
 .binding-row .muted { font-size: 10px; }
 .editor-toolbar { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px; }
 .editor-toolbar > div { display: flex; gap: 8px; }
 .code-editor { border: 1px solid var(--editor-border); border-radius: 8px; overflow: hidden; height: clamp(270px, 43vh, 540px); min-width: 0; }
-/* 标题、状态和代码共用一个外框，红绿差异直接展示在原编辑器的滚动区域中。 */
+/* 代码编辑器内部滚动到边界时，不继续滚动外层配置内容区域。 */
+.code-editor .cm-scroller { overscroll-behavior-y: contain; }
+/* 差异只保留红绿颜色，正文使用编辑器默认边距，不额外预留符号列。 */
 .code-editor-shell { min-width: 0; }
-.code-editor-shell.has-inline-diff { border: 1px solid var(--editor-border); border-radius: 8px; overflow: hidden; }
-.has-inline-diff .code-editor { border: none; border-radius: 0; }
-.inline-diff-heading { background: var(--diff-pre-bg); border-bottom: 1px solid var(--diff-border); }
-.inline-diff-heading .diff-heading { border-bottom: none; }
-.inline-diff-status, .inline-diff-error { margin: 0; padding: 0 12px 10px; font-size: 11px; }
-.inline-diff-error { color: var(--error-text); white-space: pre-wrap; overflow-wrap: anywhere; }
-.code-editor-shell.has-inline-diff .cm-line { position: relative; padding-left: 22px; }
 .cm-line.cm-diff-removed-line { background: var(--diff-remove-bg) !important; }
 .cm-diff-removed-line, .cm-diff-removed-line span { color: var(--diff-remove-text) !important; }
-.cm-diff-removed-line::before { content: "−"; position: absolute; left: 6px; user-select: none; }
 .cm-diff-removed-line[data-no-newline="true"]::after { content: " ↵（末行无换行）"; color: var(--muted); font-size: 10px; }
 .cm-diff-added-block { background: var(--diff-add-bg); color: var(--diff-add-text); }
+/* 新增预览行沿用当前 CodeMirror 默认行边距，与原文起点一致。 */
 .cm-diff-added-line { display: flex; align-items: baseline; padding: 0 2px 0 6px; }
-.cm-diff-sign { flex: 0 0 16px; user-select: none; }
 .cm-diff-added-text { min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .cm-diff-no-newline { color: var(--muted); font-size: 10px; flex-shrink: 0; }
-.file-path { overflow-wrap: anywhere; font-size: 11px; color: var(--path-text); font-family: Consolas, monospace; }
-.notice { background: var(--notice-bg); border: 1px solid var(--notice-border); color: var(--notice-text); padding: 12px 15px; border-radius: 7px; font-size: 11px; line-height: 1.9; overflow-wrap: anywhere; margin: 0; }
-.global-notice { margin: 12px 24px 0; }
-.error-box, .success-box { margin: 14px 24px 0; padding: 14px 17px; border-radius: 7px; font-size: 12px; line-height: 1.9; overflow-wrap: anywhere; }
-.error-box { border: 1px solid var(--error-border); background: var(--error-bg); color: var(--error-text); white-space: pre-wrap; }
-.form-section .error-box { margin: 0; }
-.success-box { border: 1px solid var(--success-border); background: var(--success-bg); color: var(--success-text); }
-.error-box p { margin: 6px 0 10px; font-size: 12px; }
-.error-box > button.quiet, .success-box > button.quiet { margin-left: 10px; font-size: 10px; }
-.progress { padding: 9px 28px; color: var(--progress-text); background: var(--progress-bg); font-size: 11px; }
+.file-path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; color: var(--path-text); font-family: Consolas, monospace; }
+/* 所有业务提示共用一行高度，正文截断只影响显示，完整信息仍可悬停查看。 */
+.status-bar:has(.inline-notice) { padding: 8px 24px 0; }
+.inline-notice { display: flex; align-items: center; gap: 10px; min-width: 0; height: 30px; flex-shrink: 0; padding: 0 10px; border: 1px solid var(--notice-border); border-radius: 6px; color: var(--notice-text); background: var(--notice-bg); font-size: 11px; line-height: 28px; }
+.inline-notice-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.inline-notice > button { flex-shrink: 0; padding: 2px 8px; font-size: 10px; line-height: 20px; }
+.inline-notice-error { border-color: var(--error-border); background: var(--error-bg); color: var(--error-text); }
+.inline-notice-success { border-color: var(--success-border); background: var(--success-bg); color: var(--success-text); }
+.field-hint { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; line-height: 1.5; }
 .actions { display: flex; flex-wrap: wrap; gap: 10px; }
 .copy-source { border: 1px solid var(--box-border); border-radius: 7px; padding: 12px; font-size: 11px; }
 summary { cursor: pointer; line-height: 1.9; }

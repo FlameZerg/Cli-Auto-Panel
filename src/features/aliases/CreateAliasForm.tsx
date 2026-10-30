@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import { CodeEditor } from "../../components/CodeEditor";
+import { InlineNotice } from "../../components/InlineNotice";
+import { MergePrioritySelect } from "./MergePrioritySelect";
 import { useMergePreview } from "../preview/useMergePreview";
 import { api } from "../../api";
-import type { Bootstrap, Change, Kind } from "../../types";
+import type { Bootstrap, Change, Kind, MergePriority } from "../../types";
 
 interface Props {
   kind: Kind;
@@ -17,6 +19,7 @@ export function CreateAliasForm({ kind, data, disabled, onSubmit, onDirty, onErr
   const [name, setName] = useState("");
   const [launcher, setLauncher] = useState(kind === "codex" ? "codex" : "claude");
   const [templateId, setTemplateId] = useState("");
+  const [mergePriority, setMergePriority] = useState<MergePriority>("current");
   const [content, setContent] = useState(kind === "codex" ? "" : "{}\n");
   const [sourceId, setSourceId] = useState("");
   const [copying, setCopying] = useState(false);
@@ -26,7 +29,8 @@ export function CreateAliasForm({ kind, data, disabled, onSubmit, onDirty, onErr
   const selected = templates.find((t) => t.id === templateId);
   // 新建表单也保留未合并草稿，避免反复切换模板后累积旧片段或无法取消应用。
   const merged = useMergePreview({
-    kind, content, template: selected?.content ?? null, revision: data.state.revision, enabled: !!selected,
+    kind, content, template: selected?.content ?? null, mergePriority,
+    revision: data.state.revision, enabled: !!selected,
   });
   const entries = data.inventory.configs.filter((c) => c.kind === kind && !c.error);
   // 路径提示使用后端实际目录，并统一末尾分隔符以兼容环境变量覆盖。
@@ -50,7 +54,6 @@ export function CreateAliasForm({ kind, data, disabled, onSubmit, onDirty, onErr
     <div className="form-section">
       <div className="section-title"><div><span className="eyebrow">NEW CONFIGURATION</span><h2>新建别名配置</h2></div>
         <span className="tag">{kind === "codex" ? "TOML" : "JSON"}</span></div>
-      <p className="muted">配置文件、别名注册和通用配置绑定将一起提交。已有文件或命令不会被覆盖。</p>
       <div className="form-row">
         <label>名称后缀<input value={name} disabled={disabled || copying} placeholder="支持中文、字母、数字、点、短横线、下划线"
           onChange={(e) => change(() => setName(e.target.value))} /></label>
@@ -62,9 +65,11 @@ export function CreateAliasForm({ kind, data, disabled, onSubmit, onDirty, onErr
           onChange={(e) => change(() => setTemplateId(e.target.value))}>
           <option value="">不应用</option>{templates.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
         </select></label>
+        {/* 新建也使用同一优先级，并纳入未保存提示与实时差异预览。 */}
+        <label>合并优先级<MergePrioritySelect value={mergePriority} disabled={disabled || !templateId}
+          onChange={(value) => change(() => setMergePriority(value))} /></label>
       </div>
-      <div className="notice">将创建 {`${root}\\${filename}`}。
-        {launcher === "both" && " 两个命令共享同一份配置和模板绑定。"}</div>
+      <InlineNotice messages={[`将创建 ${root}\\${filename}`]} />
       <section className="copy-source">
         <h3>从已有配置复制</h3>
         <select value={sourceId} disabled={disabled || copying} onChange={(e) => setSourceId(e.target.value)}>
@@ -73,14 +78,14 @@ export function CreateAliasForm({ kind, data, disabled, onSubmit, onDirty, onErr
         <button disabled={disabled || copying || !sourceId} onClick={() => void copySource()}>
           {copying ? "读取中…" : "复制到草稿"}</button>
       </section>
-      <label>个别配置{selected ? "（同一编辑器内红删绿增，绿色新增行仅预览）" : "原文"}</label>
+      <label>个别配置</label>
       {/* 与已有配置页共用内联差异，预览内容不混入新建文件的原始草稿。 */}
       <CodeEditor value={content} kind={kind} readOnly={disabled || copying}
         onChange={(value) => change(() => setContent(value))}
-        diff={selected ? { ...merged, label: `当前草稿 → 应用「${selected.name}」` } : undefined} />
+        diff={selected ? merged : undefined} />
       <button className="primary" disabled={disabled || copying || !name.trim()}
         onClick={() => onSubmit({ type: "createAlias", kind, launcher, name: name.trim(), content,
-          templateId: templateId || null })}>新建文件并注册别名</button>
+          templateId: templateId || null, mergePriority })}>新建文件并注册别名</button>
     </div>
   );
 }

@@ -30,19 +30,16 @@ class AddedLinesWidget extends WidgetType {
     const block = document.createElement("div");
     block.className = "cm-diff-added-block";
     block.contentEditable = "false";
-    block.title = "通用配置合并后的新增内容，仅预览；保存后写入文件";
     for (const line of this.lines) {
       const row = document.createElement("div");
       row.className = "cm-diff-added-line";
-      const sign = document.createElement("span");
-      sign.className = "cm-diff-sign";
-      sign.textContent = "+";
-      sign.setAttribute("aria-label", `新增，第 ${line.afterLine} 行`);
+      // 无障碍说明放在行上，不再为加号创建占据正文宽度的独立列。
+      row.setAttribute("aria-label", `新增，第 ${line.afterLine} 行`);
       const text = document.createElement("span");
       text.className = "cm-diff-added-text";
       // 仅以文本插入配置内容，避免将外部配置解释为 HTML。
       text.textContent = line.text || " ";
-      row.append(sign, text);
+      row.append(text);
       if (line.noNewline) {
         const marker = document.createElement("span");
         marker.className = "cm-diff-no-newline";

@@ -5,7 +5,11 @@ mod discovery;
 mod extract;
 mod files;
 mod journal;
+mod history_store;
+mod layout;
+mod launcher_service;
 mod merge_json;
+mod merge_policy;
 mod merge_toml;
 pub mod model;
 mod planner;
@@ -13,6 +17,8 @@ mod powershell;
 mod profile_editor;
 mod rename_service;
 mod repository;
+mod state;
+mod storage_schema;
 
 use model::*;
 use std::path::{Path, PathBuf};
@@ -74,14 +80,15 @@ impl Engine {
             }
         }
         Ok(Bootstrap {
-            history: journal::history(&self.paths.data, &state)?,
+            history: self.store.history(&self.paths.data, &state)?,
+            history_error: None,
             state, inventory,
             profile_path: self.paths.profile.to_string_lossy().into(),
             // 界面提示与后端路径校验共用同一目录来源，避免前端猜测用户路径。
             codex_root: self.paths.codex_root.to_string_lossy().into(),
             claude_root: self.paths.claude_root.to_string_lossy().into(),
             data_path: self.paths.data.to_string_lossy().into(),
-            pending_recovery: journal::pending(&self.paths.data),
+            pending_recovery: journal::pending(&self.paths.data)? || self.store.is_legacy(),
         })
     }
 
@@ -99,16 +106,9 @@ impl Engine {
         if let Err(error) = planner::validate(entry.kind, &content) {
             notices.push(format!("{error} 可在编辑器中修复后重新保存。"));
         }
-        if let Some(binding) = state.bindings.iter().find(|b| b.config_id == id) {
-            if binding.last_hash != hash {
-                notices.push("文件已被外部修改；重新载入后保存将以当前文件为基线，不会反向修改公共模板。".into());
-            }
-        }
+        // 共享配置的说明不进入编辑页，仅返回真实的语法及兼容性错误。
         if entry.kind == Kind::Codex {
-            match compatibility::inspect_codex(&self.paths, &content) {
-                Ok((messages, _)) => notices.extend(messages),
-                Err(error) => notices.push(error),
-            }
+            if let Err(error) = compatibility::inspect_codex(&self.paths, &content) { notices.push(error); }
         }
         Ok(Document { content, hash, notices })
     }
@@ -118,9 +118,10 @@ impl Engine {
         extract::extract(kind, content)
     }
 
-    // 只读草稿预览沿用保存逻辑，按实际绑定剥离旧片段，不读取或改写配置文件。
+    // 只读预览采用草稿优先级，与保存共用三方合并；取消应用直接返回原文。
     pub fn preview_merge(
         &self, kind: Kind, content: &str, template: Option<&str>, config_id: Option<&str>,
+        merge_priority: MergePriority,
     ) -> Result<String> {
         let state = self.store.load()?;
         let binding = config_id.and_then(|id| state.bindings.iter().find(|b| b.config_id == id));
@@ -129,17 +130,24 @@ impl Engine {
                 return Err("不能跨 Codex / Claude 预览通用配置。".into());
             }
         }
-        planner::merge_config(kind, content, binding.map(|b| b.applied_content.as_str()), template)
+        planner::merge_config(kind, content, binding, template, merge_priority).map(|(output, _)| output)
     }
 
     pub fn prepare(&mut self, request: ChangeRequest) -> Result<Preview> {
         self.preview = None;
-        if journal::pending(&self.paths.data) { return Err("必须先恢复未完成操作，再创建新的修改计划。".into()); }
+        if journal::pending(&self.paths.data)? || self.store.is_legacy() {
+            return Err("必须先恢复未完成操作并完成存储迁移，再创建新的修改计划。".into());
+        }
+        if layout::is_change(&request.change) { return Err("列表布局请使用轻量保存入口。".into()); }
         let state = self.store.load()?;
-        // 独立模板及分组容器管理不依赖配置文件，失效入口不应阻断元数据维护。
+        let backup = if let Change::RestoreBackup { id } = &request.change {
+            let backup = self.store.backup(&self.paths.data, id)?;
+            self.validate_plan_paths(&backup)?;
+            Some(backup)
+        } else { None };
+        // 删除模板及恢复不依赖配置清单；模板保存始终扫描并同步全部绑定。
         let metadata_only = matches!(&request.change,
-            Change::DeleteTemplate { .. } | Change::SaveTemplate { sync_bindings: false, .. }
-            | Change::SaveConfigGroup { .. } | Change::DeleteConfigGroup { .. });
+            Change::DeleteTemplate { .. } | Change::RestoreBackup { .. });
         let (profile_hash, ast, inventory) = if metadata_only {
             (String::new(), AstResult::default(), Inventory { configs: Vec::new(), warnings: Vec::new() })
         } else {
@@ -147,12 +155,52 @@ impl Engine {
             let inventory = discovery::inventory(&self.paths, &ast, &state);
             (hash, ast, inventory)
         };
-        let plan = planner::prepare(&self.paths, state, &inventory, &ast, &profile_hash, request)?;
+        let plan = planner::prepare(&self.paths, state, &inventory, &ast, &profile_hash, request, backup.as_ref())?;
         self.validate_plan_paths(&plan)?;
+        if let Some(backup) = backup.as_ref().filter(|backup| backup.format_version == 2) {
+            for change in backup.files.iter().filter(|change| change.before.is_none() && change.after.is_some()) {
+                let expected = self.store.created_identity(&backup.id, &change.path)?;
+                let captured = plan.files.iter().find(|file| file.path == change.path)
+                    .and_then(|file| file.before_identity.as_ref());
+                // 与实际准备删除的快照身份比较，避免校验与捕获之间接管同内容的新文件。
+                if captured != Some(&expected) {
+                    return Err("新建文件已被替换，禁止通过撤销删除不属于本次操作的文件。".into());
+                }
+            }
+        }
         // 差异生成失败时不保留可提交计划，避免失败请求遗留有效写入入口。
         let preview = self.preview(&plan)?;
         self.preview = Some(plan);
         Ok(preview)
+    }
+
+    pub fn update_layout(&mut self, request: ChangeRequest) -> Result<LayoutOutcome> {
+        if journal::pending(&self.paths.data)? || self.store.is_legacy() {
+            return Err("存在未完成操作，禁止保存布局。".into());
+        }
+        let current = self.store.load()?;
+        if current.revision != request.expected_revision
+            || current.layout_revision != request.expected_layout_revision {
+            return Err("业务或布局版本已变化，请刷新后重试。".into());
+        }
+        let inventory = if matches!(&request.change,
+            Change::ReorderConfigs { .. } | Change::AssignConfigGroup { .. }) {
+            let (_, ast) = self.ast()?;
+            discovery::inventory(&self.paths, &ast, &current)
+        } else { Inventory { configs: Vec::new(), warnings: Vec::new() } };
+        let next = layout::prepare(&current, &inventory, request.change)?;
+        self.store.save_layout(&current, &next)?;
+        // 返回已提交的小份布局投影，不重新扫描配置和历史正文。
+        let (history, history_error) = match self.store.history(&self.paths.data, &next) {
+            Ok(history) => (Some(history), None),
+            Err(error) => (None, Some(format!(
+                "布局已保存，但历史索引暂不可用，恢复入口已暂停；请刷新清单，不要重复保存：{error}"
+            ))),
+        };
+        Ok(LayoutOutcome {
+            layout_revision: next.layout_revision, config_order: next.config_order,
+            template_order: next.template_order, config_groups: next.config_groups, history, history_error,
+        })
     }
 
     fn preview(&self, plan: &ApplyPlan) -> Result<Preview> {
@@ -197,6 +245,9 @@ impl Engine {
     }
 
     fn validate_plan_paths(&self, plan: &ApplyPlan) -> Result<()> {
+        if !matches!(plan.format_version, 1 | 2) {
+            return Err("不支持此恢复记录版本，禁止写入。".into());
+        }
         uuid::Uuid::parse_str(&plan.id).map_err(|_| "操作日志编号不合法，禁止恢复。")?;
         let mut seen = std::collections::HashSet::new();
         for change in &plan.files {
@@ -218,23 +269,57 @@ impl Engine {
                 return Err("操作计划含有范围外文件，已禁止提交。".into());
             }
         }
+        for guard in &plan.guards {
+            if !seen.insert(discovery::key(&guard.path)) {
+                return Err("操作计划的只读依赖与写入目标重复。".into());
+            }
+            if guard.path == self.paths.profile || guard.path == self.paths.codex_base { continue; }
+            let allowed = [Kind::Codex, Kind::Claude].into_iter().any(|kind| {
+                discovery::managed_path(&self.paths, &guard.path, kind)
+                    .is_ok_and(|resolved| resolved == guard.path)
+            });
+            if !allowed { return Err("恢复记录包含范围外的只读依赖。".into()); }
+        }
         Ok(())
     }
 
-    pub fn commit(&mut self, id: &str) -> Result<Bootstrap> {
-        let plan = self.preview.take().ok_or("没有可以提交的操作计划。")?;
-        if plan.id != id { return Err("操作编号已过期，请重新保存。".into()); }
+    pub fn commit(&mut self, id: &str) -> Result<CommitOutcome> {
+        uuid::Uuid::parse_str(id).map_err(|_| "操作编号无效。")?;
+        if !self.preview.as_ref().is_some_and(|plan| plan.id == id) {
+            // 响应丢失后的同编号重试只返回提交凭据，不重复改写配置或增加版本。
+            if self.store.current_operation(id)? {
+                let saved = self.store.backup(&self.paths.data, id)?;
+                if !self.store.committed(&saved)? { return Err("提交凭据不完整，禁止重复操作。".into()); }
+                let warnings = if journal::pending(&self.paths.data)? {
+                    vec!["操作已提交，仍有恢复日志待清理，请使用恢复入口。".into()]
+                } else { Vec::new() };
+                return Ok(self.commit_outcome(id, warnings));
+            }
+            return Err("没有对应的可提交计划；请刷新确认真实状态，勿重复执行未知结果的操作。".into());
+        }
+        let plan = self.preview.take().ok_or("操作计划已失效。")?;
         self.validate_plan_paths(&plan)?;
-        journal::commit(&self.paths.data, &mut self.store, &plan)?;
+        let warning = journal::commit(&self.paths.data, &mut self.store, &plan)?;
         self.ast_cache = None;
-        self.bootstrap()
+        Ok(self.commit_outcome(id, warning.into_iter().collect()))
+    }
+
+    fn commit_outcome(&mut self, id: &str, warnings: Vec<String>) -> CommitOutcome {
+        // 提交成功与刷新成功分开表达，刷新错误不再伪装成保存失败。
+        match self.bootstrap() {
+            Ok(snapshot) => CommitOutcome { id: id.into(), snapshot: Some(snapshot), warnings, refresh_error: None },
+            Err(error) => CommitOutcome { id: id.into(), snapshot: None, warnings, refresh_error: Some(error) },
+        }
     }
 
     pub fn recover(&mut self) -> Result<Bootstrap> {
         self.preview = None;
-        let plan = journal::pending_plan(&self.paths.data)?;
-        self.validate_plan_paths(&plan)?;
-        journal::recover(&self.paths.data, &mut self.store)?;
+        if journal::pending(&self.paths.data)? {
+            let plan = journal::pending_plan(&self.paths.data)?;
+            self.validate_plan_paths(&plan)?;
+            journal::recover(&self.paths.data, &mut self.store)?;
+        }
+        self.store.migrate_if_ready(&self.paths.data)?;
         self.ast_cache = None;
         self.bootstrap()
     }

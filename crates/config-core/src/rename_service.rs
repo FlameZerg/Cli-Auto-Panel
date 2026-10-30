@@ -79,6 +79,9 @@ pub fn rename(
         .chain(plan.files.iter().filter(|change| change.path != source).cloned())
         .chain(std::iter::once(removed)).collect();
     plan.after_state = state;
+    plan.identity_changes.push(crate::model::ConfigIdentityChange {
+        before: Some(entry.id.clone()), after: Some(id),
+    });
     plan.label = format!("重命名配置为「{filename}」并保存");
     plan.notices.push(format!(
         "配置将从 {} 迁移到 {}，同步更新 {} 个命令入口及模板绑定；未经 profile 声明的外部引用需手动更新。",

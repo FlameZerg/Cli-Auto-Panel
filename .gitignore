@@ -6,9 +6,8 @@ src-tauri/target/
 .vscode/
 *.log
 *.local
-.claude/
 src-tauri/icons/icon.ico
-
+cli-auto-panel.exe
 /artifacts/
 .env
 .env.*
@@ -16,6 +15,7 @@ src-tauri/icons/icon.ico
 config.*.toml
 settings.*.json
 auth.json
+Microsoft.PowerShell_profile.ps1
 *.sqlite
 *.sqlite3
 *.sqlite3-*
@@ -26,3 +26,5 @@ auth.json
 *.pfx
 *.p12
 backups/
+.claude/
+

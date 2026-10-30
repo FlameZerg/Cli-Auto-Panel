@@ -60,7 +60,8 @@ pub fn inventory(paths: &Paths, ast: &AstResult, state: &PanelState) -> Inventor
         if entry.kind != kind {
             entry.error = Some("同一文件被不同应用类型引用，已禁止修改。".into());
         }
-        if entry.error.is_none() {
+        // 新旧 Codex 入口经常共用文件，同一轮清单只读取并计算一次文件哈希。
+        if entry.error.is_none() && entry.hash.is_none() {
             match files::read(&path) {
                 Ok(Some((bytes, identity))) => {
                     entry.hash = Some(files::hash(&bytes));

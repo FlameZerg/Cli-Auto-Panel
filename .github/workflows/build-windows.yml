@@ -16,12 +16,17 @@ jobs:
     name: Windows x64 EXE
     runs-on: windows-2022
     timeout-minutes: 60
+    # 清理仅作用于 Actions 产物；仓库内容仍保持只读。
+    permissions:
+      contents: read
+      actions: write
     defaults:
       run:
         shell: pwsh
     env:
       RUSTUP_TOOLCHAIN: stable-x86_64-pc-windows-msvc
       CARGO_TERM_COLOR: always
+      BUILD_ARTIFACT_NAME: cli-auto-panel-windows-x64
 
     steps:
       # 固定已核对的提交，避免可移动版本标签导致构建步骤被静默替换。
@@ -58,11 +63,69 @@ jobs:
           New-Item -ItemType Directory -Path artifacts -Force | Out-Null
           Copy-Item -LiteralPath src-tauri/target/release/cli-auto-panel.exe -Destination artifacts/cli-auto-panel.exe -ErrorAction Stop
 
+      # 新 EXE 已准备好才清理旧包；在上传前释放空间，避免旧包占满额度导致上传失败。
+      - name: 清理本工作流的同名旧产物
+        timeout-minutes: 5
+        env:
+          ARTIFACT_CLEANUP_TOKEN: ${{ github.token }}
+        run: |
+          Set-StrictMode -Version Latest
+          $ErrorActionPreference = "Stop"
+          $apiRoot = "$env:GITHUB_API_URL/repos/$env:GITHUB_REPOSITORY/actions"
+          $headers = @{
+            Authorization = "Bearer $env:ARTIFACT_CLEANUP_TOKEN"
+            Accept = "application/vnd.github+json"
+            "X-GitHub-Api-Version" = "2022-11-28"
+          }
+          $currentRunId = [long]$env:GITHUB_RUN_ID
+          $currentRun = Invoke-RestMethod -Uri "$apiRoot/runs/$currentRunId" -Headers $headers -TimeoutSec 30
+          $currentStartedAt = [DateTimeOffset]::Parse($currentRun.run_started_at)
+          $workflowByRun = @{}
+          $artifactIds = [System.Collections.Generic.HashSet[long]]::new()
+          $artifactName = [uri]::EscapeDataString($env:BUILD_ARTIFACT_NAME)
+          $page = 1
+
+          # 先分页收集，再删除，避免边删除边翻页造成遗漏。
+          do {
+            $response = Invoke-RestMethod -Uri "$apiRoot/artifacts?name=$artifactName&per_page=100&page=$page" -Headers $headers -TimeoutSec 30
+            $artifacts = @($response.artifacts)
+            foreach ($artifact in $artifacts) {
+              $sourceRunId = [long]$artifact.workflow_run.id
+              if ($artifact.name -cne $env:BUILD_ARTIFACT_NAME -or $sourceRunId -ge $currentRunId -or
+                  [DateTimeOffset]::Parse($artifact.created_at) -ge $currentStartedAt) {
+                continue
+              }
+              if (-not $workflowByRun.ContainsKey($sourceRunId)) {
+                $workflowByRun[$sourceRunId] = Invoke-RestMethod -Uri "$apiRoot/runs/$sourceRunId" -Headers $headers -TimeoutSec 30
+              }
+              $sourceRun = $workflowByRun[$sourceRunId]
+              # 不影响其他工作流、仍在执行的运行以及比当前运行更新的包。
+              if ($sourceRun.workflow_id -eq $currentRun.workflow_id -and $sourceRun.status -eq "completed") {
+                [void]$artifactIds.Add([long]$artifact.id)
+              }
+            }
+            $page += 1
+          } while ($artifacts.Count -eq 100)
+
+          foreach ($artifactId in $artifactIds) {
+            try {
+              Invoke-RestMethod -Method Delete -Uri "$apiRoot/artifacts/$artifactId" -Headers $headers -TimeoutSec 30 | Out-Null
+              Write-Host "已删除旧产物：$artifactId"
+            } catch [Microsoft.PowerShell.Commands.HttpResponseException] {
+              # 不同分支可能并行清理；仅将已被删除的 404 视为完成，其他错误直接失败。
+              if ([int]$_.Exception.Response.StatusCode -ne 404) { throw }
+              Write-Host "旧产物已由其他流程移除：$artifactId"
+            }
+          }
+          Write-Host "旧产物清理完成，共处理 $($artifactIds.Count) 份。"
+
       - name: 上传 EXE
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: cli-auto-panel-windows-x64
+          name: ${{ env.BUILD_ARTIFACT_NAME }}
           path: artifacts/
           if-no-files-found: error
-          retention-days: 7
+          # 同一运行重试时替换旧附件；跨运行旧包由上方定向清理步骤处理。
+          overwrite: true
+          retention-days: 1
           compression-level: 1

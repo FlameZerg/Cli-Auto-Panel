@@ -1,4 +1,6 @@
 export type Kind = "codex" | "claude";
+export type CodexLauncher = "codex" | "codexnew" | "both";
+export type MergePriority = "current" | "template";
 
 export interface Template {
   id: string;
@@ -11,9 +13,13 @@ export interface Template {
 export interface Binding {
   configId: string;
   templateId: string;
+  // 默认优先级在持久化时省略，兼容已有绑定与历史备份。
+  mergePriority?: MergePriority;
   appliedContent: string;
   appliedRevision: number;
   lastHash: string;
+  // 由后端维护的手动覆盖键路径，旧状态中可省略。
+  overrides?: string[][];
 }
 
 export interface ConfigEntry {
@@ -36,6 +42,7 @@ export interface ConfigGroup {
 export interface Bootstrap {
   state: {
     revision: number;
+    layoutRevision?: number;
     templates: Template[];
     bindings: Binding[];
     imports: { path: string; kind: Kind }[];
@@ -43,15 +50,34 @@ export interface Bootstrap {
     configOrder?: string[];
     // 旧状态不含此字段时，全部卡片视为未分组。
     configGroups?: ConfigGroup[];
+    templateOrder?: string[];
   };
   inventory: { configs: ConfigEntry[]; warnings: string[] };
-  history: { id: string; label: string; createdAt: string; canRestore: boolean }[];
+  history: { id: string; label: string; createdAt: string; canRestore: boolean; legacy: boolean }[];
+  historyError: string | null;
   profilePath: string;
   // 实际受管目录由后端解析，前端不再硬编码盘符或推断用户目录。
   codexRoot: string;
   claudeRoot: string;
   dataPath: string;
   pendingRecovery: boolean;
+}
+
+// 保存已成功时仍可能有清理或刷新错误，不能将这些错误引导为重复保存。
+export interface CommitOutcome {
+  id: string;
+  snapshot: Bootstrap | null;
+  warnings: string[];
+  refreshError: string | null;
+}
+
+export interface LayoutOutcome {
+  layoutRevision: number;
+  configOrder: string[];
+  templateOrder: string[];
+  configGroups: ConfigGroup[];
+  history: Bootstrap["history"] | null;
+  historyError: string | null;
 }
 
 export interface Document {
@@ -68,15 +94,19 @@ export interface Preview {
 }
 
 export type Change =
-  | { type: "saveTemplate"; id: string | null; name: string; kind: Kind; content: string; syncBindings: boolean }
+  | { type: "saveTemplate"; id: string | null; name: string; kind: Kind; content: string }
   | { type: "deleteTemplate"; id: string }
   // 名称后缀与配置草稿一起保存，由后端同步更新文件及全部命令入口。
-  | { type: "saveConfig"; id: string; name: string; content: string; templateId: string | null; expectedHash: string }
+  | {
+      type: "saveConfig"; id: string; name: string; content: string;
+      templateId: string | null; mergePriority: MergePriority; expectedHash: string;
+    }
   | {
       type: "createAlias"; kind: Kind; launcher: string; name: string; content: string;
-      templateId: string | null;
+      templateId: string | null; mergePriority: MergePriority;
     }
   | { type: "removeAlias"; name: string }
+  | { type: "setCodexLauncher"; id: string; launcher: CodexLauncher; expectedHash: string }
   | { type: "deleteConfig"; id: string; expectedHash: string }
   | { type: "importConfig"; path: string; kind: Kind }
   | { type: "restoreBackup"; id: string }
@@ -102,5 +132,6 @@ export interface ConfigDraft {
   content: string;
   hash: string;
   templateId: string | null;
+  mergePriority: MergePriority;
   notices: string[];
 }

@@ -1,4 +1,4 @@
-use crate::model::Result;
+use crate::{merge_policy::{self, Overrides}, model::{MergePriority, Result}};
 use toml_edit::{DocumentMut, Item, TableLike, Value};
 
 pub fn parse(text: &str) -> Result<DocumentMut> {
@@ -39,11 +39,12 @@ fn check_value_depth(value: &Value, depth: usize) -> Result<()> {
     }
 }
 
-fn table_subset(target: &dyn TableLike, source: &dyn TableLike) -> bool {
-    source.iter().all(|(k, v)| target.get(k).is_some_and(|t| item_subset(t, v)))
+fn table_equal(target: &dyn TableLike, source: &dyn TableLike) -> bool {
+    target.len() == source.len()
+        && source.iter().all(|(key, value)| target.get(key).is_some_and(|item| item_equal(item, value)))
 }
 
-fn value_subset(target: &Value, source: &Value) -> bool {
+fn value_equal(target: &Value, source: &Value) -> bool {
     match (target, source) {
         (Value::String(t), Value::String(s)) => t.value() == s.value(),
         (Value::Integer(t), Value::Integer(s)) => t.value() == s.value(),
@@ -52,116 +53,94 @@ fn value_subset(target: &Value, source: &Value) -> bool {
         }
         (Value::Boolean(t), Value::Boolean(s)) => t.value() == s.value(),
         (Value::Datetime(t), Value::Datetime(s)) => t.value() == s.value(),
-        (Value::InlineTable(t), Value::InlineTable(s)) => table_subset(t, s),
+        (Value::InlineTable(t), Value::InlineTable(s)) => table_equal(t, s),
         (Value::Array(t), Value::Array(s)) => {
-            let mut used = vec![false; t.len()];
-            s.iter().all(|v| {
-                if let Some(i) = t.iter().enumerate().position(|(i, x)| !used[i] && value_subset(x, v)) {
-                    used[i] = true;
-                    true
-                } else {
-                    false
-                }
-            })
+            t.len() == s.len() && t.iter().zip(s.iter()).all(|(t, s)| value_equal(t, s))
         }
         _ => false,
     }
 }
 
-fn item_subset(target: &Item, source: &Item) -> bool {
+fn item_equal(target: &Item, source: &Item) -> bool {
     if let (Some(t), Some(s)) = (target.as_table_like(), source.as_table_like()) {
-        return table_subset(t, s);
+        return table_equal(t, s);
     }
     if let (Some(t), Some(s)) = (target.as_array_of_tables(), source.as_array_of_tables()) {
-        let mut used = vec![false; t.len()];
-        return s.iter().all(|table| {
-            if let Some(i) = t.iter().enumerate().position(|(i, x)| !used[i] && table_subset(x, table)) {
-                used[i] = true;
-                true
-            } else { false }
-        });
+        return t.len() == s.len() && t.iter().zip(s.iter()).all(|(t, s)| table_equal(t, s));
     }
     match (target.as_value(), source.as_value()) {
-        (Some(t), Some(s)) => value_subset(t, s),
+        (Some(t), Some(s)) => value_equal(t, s),
+        _ => target.is_none() && source.is_none(),
+    }
+}
+
+fn merge_table(
+    target: &mut dyn TableLike, previous: &dyn TableLike, selected: &dyn TableLike,
+    parent: &[String], overrides: &mut Overrides, priority: MergePriority,
+) {
+    let keys: std::collections::BTreeSet<_> = previous.iter().chain(selected.iter())
+        .map(|(key, _)| key.to_owned()).collect();
+    for key in keys {
+        let path: Vec<_> = parent.iter().cloned().chain(std::iter::once(key.clone())).collect();
+        if priority == MergePriority::Current && merge_policy::protected(overrides, &path) { continue; }
+        let result = merge_item(target.get(&key), previous.get(&key), selected.get(&key), &path, overrides, priority);
+        match result {
+            Some(item) => { target.insert(&key, item); }
+            None => { target.remove(&key); }
+        }
+    }
+}
+
+fn merge_item(
+    current: Option<&Item>, previous: Option<&Item>, selected: Option<&Item>,
+    path: &[String], overrides: &mut Overrides, priority: MergePriority,
+) -> Option<Item> {
+    // 只修改克隆后的表；保留原有注释及格式，不改变输入文档。
+    if let Some(current) = current.filter(|item| item.as_table_like().is_some()) {
+        if (previous.map_or(true, |item| item.as_table_like().is_some())
+            || (priority == MergePriority::Template && selected.is_some()))
+            && selected.map_or(true, |item| item.as_table_like().is_some()) {
+            let mut result = current.clone();
+            let empty = toml_edit::Table::new();
+            let table = result.as_table_like_mut()?;
+            merge_table(table, previous.and_then(Item::as_table_like).unwrap_or(&empty),
+                selected.and_then(Item::as_table_like).unwrap_or(&empty), path, overrides, priority);
+            return if table.is_empty() && selected.is_none() { None } else { Some(result) };
+        }
+    }
+    // 通用优先覆盖标量、数组及类型冲突；语义相同时保留当前项的注释与格式。
+    if priority == MergePriority::Template {
+        if let Some(selected) = selected {
+            return Some(current.filter(|item| item_equal(item, selected)).unwrap_or(selected).clone());
+        }
+    }
+    if merge_policy::has_protected_children(overrides, path) {
+        merge_policy::preserve(overrides, path);
+        return current.cloned();
+    }
+    let same = |left: Option<&Item>, right: Option<&Item>| match (left, right) {
+        (Some(left), Some(right)) => item_equal(left, right),
+        (None, None) => true,
         _ => false,
+    };
+    if same(current, previous) {
+        return if same(current, selected) { current.cloned() } else { selected.cloned() };
     }
+    if previous.is_none() && same(current, selected) { return current.cloned(); }
+    merge_policy::preserve(overrides, path);
+    current.cloned()
 }
 
-fn merge_table(target: &mut dyn TableLike, source: &dyn TableLike) {
-    for (key, value) in source.iter() {
-        match target.get_mut(key) {
-            Some(current) => {
-                if let (Some(t), Some(s)) = (current.as_table_like_mut(), value.as_table_like()) {
-                    merge_table(t, s);
-                } else {
-                    *current = value.clone();
-                }
-            }
-            None => {
-                target.insert(key, value.clone());
-            }
-        }
-    }
-}
-
-fn remove_item(target: &mut Item, source: &Item) {
-    if let (Some(t), Some(s)) = (target.as_table_like_mut(), source.as_table_like()) {
-        remove_table(t, s);
-        return;
-    }
-    // 表数组单独按匹配条目剥离，保留用户额外添加的技能配置。
-    if let (Some(t), Some(s)) = (target.as_array_of_tables_mut(), source.as_array_of_tables()) {
-        for table in s.iter() {
-            let index = t.iter().position(|x| table_subset(x, table));
-            if let Some(i) = index {
-                t.remove(i);
-            }
-        }
-        return;
-    }
-    if let (Some(t), Some(s)) = (target.as_array_mut(), source.as_array()) {
-        for value in s.iter() {
-            let index = t.iter().position(|x| value_subset(x, value));
-            if let Some(i) = index {
-                t.remove(i);
-            }
-        }
-        return;
-    }
-    if item_subset(target, source) {
-        *target = Item::None;
-    }
-}
-
-fn remove_table(target: &mut dyn TableLike, source: &dyn TableLike) {
-    for (key, value) in source.iter() {
-        let delete = if let Some(current) = target.get_mut(key) {
-            remove_item(current, value);
-            current.is_none()
-                || current.as_table_like().is_some_and(|t| t.is_empty())
-                || current.as_array().is_some_and(|a| a.is_empty())
-                || current.as_array_of_tables().is_some_and(|a| a.is_empty())
-        } else {
-            false
-        };
-        if delete {
-            target.remove(key);
-        }
-    }
-}
-
-pub fn apply(config: &str, snippet: &str) -> Result<String> {
-    let mut target = parse(config)?;
-    if !snippet.trim().is_empty() {
-        merge_table(target.as_table_mut(), parse(snippet)?.as_table());
-    }
-    Ok(target.to_string())
-}
-
-pub fn strip(config: &str, snippet: &str) -> Result<String> {
-    let mut target = parse(config)?;
-    if !snippet.trim().is_empty() {
-        remove_table(target.as_table_mut(), parse(snippet)?.as_table());
-    }
-    Ok(target.to_string())
+pub fn sync(
+    config: &str, previous: Option<&str>, snippet: &str, protected: &[Vec<String>], priority: MergePriority,
+) -> Result<(String, Overrides)> {
+    let mut result = parse(config)?;
+    let original = result.to_string();
+    let previous = parse(previous.unwrap_or(""))?;
+    let selected = parse(snippet)?;
+    // 与 JSON 使用同一优先级规则，切换后不沿用已失效的手动保护路径。
+    let mut overrides = if priority == MergePriority::Current { protected.to_vec() } else { Vec::new() };
+    merge_table(result.as_table_mut(), previous.as_table(), selected.as_table(), &[], &mut overrides, priority);
+    let output = result.to_string();
+    Ok((if output == original { config.to_owned() } else { output }, overrides))
 }

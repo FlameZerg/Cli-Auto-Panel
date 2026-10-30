@@ -1,6 +1,6 @@
 use crate::{
-    alias_service, compatibility, config_groups, discovery, rename_service,
-    files::{self, Text}, journal, merge_json, merge_toml,
+    alias_service, compatibility, discovery, rename_service, state,
+    files::{self, Text}, merge_json, merge_toml,
     model::*,
 };
 use std::path::Path;
@@ -14,37 +14,22 @@ pub fn validate(kind: Kind, content: &str) -> Result<()> {
     Ok(())
 }
 
-pub fn apply(kind: Kind, config: &str, snippet: &str) -> Result<String> {
-    match kind {
-        Kind::Claude => merge_json::apply(config, snippet),
-        Kind::Codex => merge_toml::apply(config, snippet),
-    }
-}
-
-fn strip(kind: Kind, config: &str, snippet: &str) -> Result<String> {
-    match kind {
-        Kind::Claude => merge_json::strip(config, snippet),
-        Kind::Codex => merge_toml::strip(config, snippet),
-    }
-}
-
-// 草稿预览与实际保存共用剥离、合并逻辑；切换模板不能把旧片段遗留在预览中。
+// 解绑直接保留原文；预览、保存及同步统一按绑定优先级处理三方合并。
 pub fn merge_config(
-    kind: Kind, content: &str, applied_content: Option<&str>, selected_content: Option<&str>,
-) -> Result<String> {
-    validate(kind, content)?;
-    if applied_content.is_some_and(|old| old.len() > 4 * 1024 * 1024)
-        || selected_content.is_some_and(|selected| selected.len() > 4 * 1024 * 1024) {
+    kind: Kind, content: &str, binding: Option<&Binding>, selected_content: Option<&str>,
+    priority: MergePriority,
+) -> Result<(String, Vec<Vec<String>>)> {
+    let Some(selected) = selected_content else { return Ok((content.to_owned(), Vec::new())); };
+    // 实际语法校验由下方合并器完成，避免每份绑定重复解析同一原文。
+    if content.len() > 4 * 1024 * 1024 { return Err("单份配置不能超过 4 MiB。".into()); }
+    let previous = binding.map(|binding| binding.applied_content.as_str());
+    if previous.is_some_and(|old| old.len() > 4 * 1024 * 1024) || selected.len() > 4 * 1024 * 1024 {
         return Err("单份通用配置不能超过 4 MiB。".into());
     }
-    let individual = applied_content.map(|old| strip(kind, content, old))
-        .transpose()?.unwrap_or_else(|| content.to_owned());
-    match selected_content {
-        Some(selected) => {
-            if !selected.trim().is_empty() { validate(kind, selected)?; }
-            apply(kind, &individual, selected)
-        }
-        None => Ok(individual),
+    let overrides = binding.map(|binding| binding.overrides.as_slice()).unwrap_or(&[]);
+    match kind {
+        Kind::Claude => merge_json::sync(content, previous, selected, overrides, priority),
+        Kind::Codex => merge_toml::sync(content, previous, selected, overrides, priority),
     }
 }
 
@@ -72,20 +57,20 @@ fn add_guard(plan: &mut ApplyPlan, guard: FileChange) -> Result<()> {
 fn check_output(paths: &Paths, plan: &mut ApplyPlan, kind: Kind, content: &str) -> Result<()> {
     validate(kind, content)?;
     if kind == Kind::Codex {
-        let (notices, guard) = compatibility::inspect_codex(paths, content)?;
-        plan.notices.extend(notices);
-        if let Some(guard) = guard { add_guard(plan, guard)?; }
-    } else {
-        plan.notices.push("Claude 的其他设置来源及现有过滤包装器仍参与运行时合并；建议新开会话。".into());
+        if let Some(guard) = compatibility::inspect_codex(paths, content)? { add_guard(plan, guard)?; }
     }
     Ok(())
 }
 
-fn replace_binding(plan: &mut ApplyPlan, config_id: &str, selected: Option<&Template>, hash: String) {
+fn replace_binding(
+    plan: &mut ApplyPlan, config_id: &str, selected: Option<&Template>, hash: String,
+    overrides: Vec<Vec<String>>, merge_priority: MergePriority,
+) {
     if let Some(selected) = selected {
         let binding = Binding {
             config_id: config_id.into(), template_id: selected.id.clone(),
             applied_content: selected.content.clone(), applied_revision: selected.revision, last_hash: hash,
+            overrides, merge_priority,
         };
         if plan.after_state.bindings.iter().any(|b| b.config_id == config_id) {
             plan.after_state.bindings = plan.after_state.bindings.iter().map(|b| {
@@ -101,7 +86,7 @@ fn replace_binding(plan: &mut ApplyPlan, config_id: &str, selected: Option<&Temp
 
 fn save_config(
     paths: &Paths, inventory: &Inventory, plan: &mut ApplyPlan,
-    id: &str, content: &str, template_id: Option<&str>, expected_hash: &str,
+    id: &str, content: &str, template_id: Option<&str>, merge_priority: MergePriority, expected_hash: &str,
 ) -> Result<()> {
     let entry = config(inventory, id)?;
     if let Some(error) = &entry.error { return Err(error.clone()); }
@@ -113,22 +98,23 @@ fn save_config(
     }
     let old = plan.before_state.bindings.iter().find(|b| b.config_id == id);
     let selected = template_id.map(|id| template(&plan.after_state, id, entry.kind).cloned()).transpose()?;
-    let output = merge_config(entry.kind, content, old.map(|b| b.applied_content.as_str()),
-        selected.as_ref().map(|t| t.content.as_str()))?;
-    check_output(paths, plan, entry.kind, &output)?;
-    let bytes = Text::decode(&raw, false)?.encode(&output);
+    let (output, overrides) = merge_config(entry.kind, content, old,
+        selected.as_ref().map(|t| t.content.as_str()), merge_priority)?;
+    let original = Text::decode(&raw, false)?;
+    // 编辑器会规范化换行；未修改正文时复用完整字节，解绑只改变面板绑定状态。
+    let unchanged = output.replace("\r\n", "\n") == original.value.replace("\r\n", "\n");
+    if !unchanged || selected.is_some() { check_output(paths, plan, entry.kind, &output)?; }
+    let bytes = if unchanged { raw } else { original.encode(&output) };
     change.after = Some(files::pack(&bytes));
-    replace_binding(plan, id, selected.as_ref(), files::hash(&bytes));
+    replace_binding(plan, id, selected.as_ref(), files::hash(&bytes), overrides, merge_priority);
     plan.files.push(change);
     plan.label = "保存配置及模板绑定".into();
-    plan.notices.push("取消应用只剥离与旧片段匹配的内容，不自动恢复以前被覆盖的值；恢复原值请使用备份。".into());
-    plan.notices.push("数组剥离按后端结构子集匹配：匹配的对象条目整体移除，额外独立条目保留；请核对明文差异。".into());
     Ok(())
 }
 
 fn save_template(
     paths: &Paths, inventory: &Inventory, plan: &mut ApplyPlan,
-    id: Option<String>, name: String, kind: Kind, content: String, sync_bindings: bool,
+    id: Option<String>, name: String, kind: Kind, content: String,
 ) -> Result<()> {
     // 名称长度按字符而非 UTF-8 字节计数，中文名称与前端限制保持一致。
     if name.trim().is_empty() || name.chars().count() > 120 || name.chars().any(char::is_control) {
@@ -155,75 +141,81 @@ fn save_template(
     }
     let bindings: Vec<Binding> = plan.before_state.bindings.iter()
         .filter(|b| b.template_id == template_id).cloned().collect();
+    let mut updates = std::collections::HashMap::new();
     for binding in bindings {
-        // 按每份绑定的实际版本判断同步，支持模板先独立保存、稍后再同步。
-        if !sync_bindings { continue; }
-        if binding.applied_content == content {
+        // 每次模板保存都同步全部绑定，不再存在模板已更新但引用仍停留旧版的保存入口。
+        // 通用优先即使模板正文未变也重新核对文件，确保外部修改的冲突值服从所选策略。
+        if binding.applied_content == content && binding.merge_priority == MergePriority::Current {
             // 内容回退至已应用版本时，只更新绑定版本号，避免误报待同步或无意义重写文件。
             if binding.applied_revision != next.revision {
-                replace_binding(plan, &binding.config_id, Some(&next), binding.last_hash.clone());
+                updates.insert(binding.config_id.clone(),
+                    Binding { applied_revision: next.revision, ..binding });
             }
             continue;
         }
         let entry = config(inventory, &binding.config_id)?;
         if let Some(error) = &entry.error { return Err(error.clone()); }
-        if entry.hash.as_deref() != Some(binding.last_hash.as_str()) {
-            return Err(format!("绑定文件被外部修改、丢失或替换，请先打开并保存后再同步：{}", entry.path));
-        }
         let path = discovery::managed_path(paths, Path::new(&entry.path), kind)?;
         let mut change = files::capture(&path, None)?;
         let raw = files::unpack(change.before.as_deref().ok_or("绑定文件不存在。")?)?;
-        if files::hash(&raw) != binding.last_hash {
+        // 手动编辑不是同步错误；只阻止本轮扫描到捕获之间的新改动，提交阶段继续校验守卫。
+        if entry.hash.as_deref() != Some(files::hash(&raw).as_str()) {
             return Err("准备同步时绑定文件再次发生外部改动，请重新载入。".into());
         }
         let original = Text::decode(&raw, false)?;
-        let individual = strip(kind, &original.value, &binding.applied_content)?;
-        let output = apply(kind, &individual, &content)?;
+        let (output, overrides) = merge_config(kind, &original.value, Some(&binding), Some(&content),
+            binding.merge_priority)?;
         check_output(paths, plan, kind, &output)?;
-        let bytes = original.encode(&output);
+        let bytes = if output == original.value { raw } else { original.encode(&output) };
         change.after = Some(files::pack(&bytes));
-        replace_binding(plan, &binding.config_id, Some(&next), files::hash(&bytes));
+        updates.insert(binding.config_id.clone(), Binding {
+            applied_content: content.clone(), applied_revision: next.revision,
+            last_hash: files::hash(&bytes), overrides, ..binding
+        });
         plan.files.push(change);
     }
-    plan.label = if sync_bindings {
-        format!("保存通用配置「{}」并同步绑定文件", next.name)
-    } else {
-        format!("仅保存通用配置「{}」", next.name)
-    };
-    if sync_bindings {
-        plan.notices.push("更新片段会先剥离旧片段，再应用新版；数组中的匹配对象条目按结构子集匹配并整体移除。".into());
-    } else {
-        plan.notices.push("仅保存模板内容，引用文件保持原样；每份绑定仍保留实际已应用的旧片段，稍后可继续同步。".into());
-    }
-    if sync_bindings && content.trim().is_empty() {
-        plan.notices.push("此模板已显式清空；保留引用但不自动重新提取，旧匹配片段将从绑定文件剥离。".into());
-    }
+    // 批量生成一次新绑定列表，避免每同步一份文件都克隆全部绑定正文。
+    plan.after_state.bindings = plan.after_state.bindings.iter().map(|binding| {
+        updates.remove(&binding.config_id).unwrap_or_else(|| binding.clone())
+    }).collect();
+    plan.label = format!("保存通用配置「{}」并同步绑定文件", next.name);
     Ok(())
 }
 
 fn create_alias(
     paths: &Paths, ast: &AstResult, profile: &str, inventory: &Inventory, plan: &mut ApplyPlan,
     kind: Kind, launcher: &str, name: &str, content: &str, template_id: Option<&str>,
+    merge_priority: MergePriority,
 ) -> Result<()> {
     validate(kind, content)?;
     let selected = template_id.map(|id| template(&plan.after_state, id, kind).cloned()).transpose()?;
-    let output = match &selected { Some(t) => apply(kind, content, &t.content)?, None => content.into() };
+    let (output, overrides) = merge_config(kind, content, None,
+        selected.as_ref().map(|template| template.content.as_str()), merge_priority)?;
     check_output(paths, plan, kind, &output)?;
     let id = alias_service::create(paths, plan, ast, profile, kind, launcher, name, &output)?;
     if inventory.configs.iter().any(|c| c.id == id) { return Err("配置目标已在管理清单中。".into()); }
-    replace_binding(plan, &id, selected.as_ref(), files::hash(output.as_bytes()));
+    replace_binding(plan, &id, selected.as_ref(), files::hash(output.as_bytes()), overrides, merge_priority);
+    plan.identity_changes.push(ConfigIdentityChange { before: None, after: Some(id) });
     plan.label = "新建配置文件并注册别名".into();
     Ok(())
 }
 
-fn restore(paths: &Paths, plan: &mut ApplyPlan, id: &str) -> Result<()> {
-    let backup = journal::backup(&paths.data, id)?;
-    if serde_json::to_value(&backup.after_state).map_err(|e| e.to_string())?
-        != serde_json::to_value(&plan.before_state).map_err(|e| e.to_string())? {
+fn restore(plan: &mut ApplyPlan, backup: &ApplyPlan) -> Result<()> {
+    if backup.layout_snapshot && (plan.before_state.layout_revision != backup.after_state.layout_revision
+        || !state::same_layout(&plan.before_state, &backup.after_state)?) {
+        return Err("此操作含旧版全量布局快照，布局已有后续修改，禁止整份覆盖。".into());
+    }
+    let matches = if backup.format_version == 1 {
+        serde_json::to_value(state::legacy(&plan.before_state)).map_err(|e| e.to_string())?
+            == serde_json::to_value(&backup.after_state).map_err(|e| e.to_string())?
+    } else { state::same_business(&backup.after_state, &plan.before_state)? };
+    if !matches {
         return Err("只能撤销当前状态对应的最近一次操作，不能用旧备份覆盖后续修改。".into());
     }
     let mut files = Vec::new();
-    for old in backup.files {
+    for guard in &backup.guards { crate::journal::verify_guard(guard)?; }
+    // 撤销按发布顺序的逆序执行：先恢复旧配置，再切回入口，最后删除新配置。
+    for old in backup.files.iter().rev() {
         let bytes = old.before.as_deref().map(files::unpack).transpose()?;
         let change = files::capture(&old.path, bytes)?;
         if change.before != old.after {
@@ -232,23 +224,41 @@ fn restore(paths: &Paths, plan: &mut ApplyPlan, id: &str) -> Result<()> {
         files.push(change);
     }
     plan.files = files;
-    plan.after_state = backup.before_state;
-    plan.after_state.revision = plan.before_state.revision + 1;
+    plan.guards = backup.guards.clone();
+    let layout = if backup.format_version == 1 || backup.layout_snapshot {
+        let mut layout = state::layout(&backup.before_state);
+        if backup.format_version == 1 {
+            layout.template_order = backup.before_state.templates.iter().map(|template| template.id.clone()).collect();
+        }
+        layout
+    } else { state::restore_layout(&plan.before_state, backup) };
+    plan.after_state = state::compose(&backup.before_state, &layout);
+    plan.after_state.revision = state::next_revision(plan.before_state.revision)?;
+    plan.identity_changes = backup.identity_changes.iter().rev().map(|change| ConfigIdentityChange {
+        before: change.after.clone(), after: change.before.clone(),
+    }).collect();
+    plan.layout_snapshot = backup.format_version == 1 || backup.layout_snapshot;
     plan.label = format!("恢复：{}", backup.label);
     plan.notices.push("将撤销对应操作的配置、profile 和绑定状态；已有终端不会被重载。".into());
+    plan.notices.push(if plan.layout_snapshot {
+        "旧版全量布局按原恢复规则处理；此操作只有在布局未再修改时才能再次撤销。"
+    } else {
+        "保留后续布局调整；恢复已删除配置时，仅重新加入仍存在的原分组，否则归入未分组。"
+    }.into());
     Ok(())
 }
 
 pub fn prepare(
     paths: &Paths, state: PanelState, inventory: &Inventory, ast: &AstResult,
-    profile_hash: &str, request: ChangeRequest,
+    profile_hash: &str, request: ChangeRequest, backup: Option<&ApplyPlan>,
 ) -> Result<ApplyPlan> {
     if request.expected_revision != state.revision { return Err("界面状态已过期，请先刷新。".into()); }
-    // 分组只修改状态库；归组虽需清单校验，也不对 profile 或配置文件建立写入计划。
+    if request.expected_layout_revision != state.layout_revision {
+        return Err("界面布局已过期，请先刷新。".into());
+    }
+    // 模板保存必须检查全部绑定；删除及恢复仍沿用独立元数据入口。
     let metadata_only = matches!(&request.change,
-        Change::DeleteTemplate { .. } | Change::SaveTemplate { sync_bindings: false, .. }
-        | Change::SaveConfigGroup { .. } | Change::DeleteConfigGroup { .. }
-        | Change::AssignConfigGroup { .. });
+        Change::DeleteTemplate { .. } | Change::RestoreBackup { .. });
     let (profile, guards) = if metadata_only {
         (String::new(), Vec::new())
     } else {
@@ -263,27 +273,31 @@ pub fn prepare(
         }])
     };
     let mut plan = ApplyPlan {
+        format_version: 2,
         id: uuid::Uuid::new_v4().to_string(), label: String::new(),
         created_at: chrono::Utc::now().to_rfc3339(),
         before_state: state.clone(),
-        after_state: PanelState { revision: state.revision + 1, ..state },
+        after_state: PanelState { revision: state::next_revision(state.revision)?, ..state },
         files: guards,
+        guards: Vec::new(),
+        identity_changes: Vec::new(),
+        layout_snapshot: false,
         notices: Vec::new(),
     };
     match request.change {
-        Change::SaveTemplate { id, name, kind, content, sync_bindings } =>
-            save_template(paths, inventory, &mut plan, id, name, kind, content, sync_bindings)?,
-        Change::SaveConfig { id, name, content, template_id, expected_hash } => {
-            save_config(paths, inventory, &mut plan, &id, &content, template_id.as_deref(), &expected_hash)?;
+        Change::SaveTemplate { id, name, kind, content } =>
+            save_template(paths, inventory, &mut plan, id, name, kind, content)?,
+        Change::SaveConfig { id, name, content, template_id, merge_priority, expected_hash } => {
+            save_config(paths, inventory, &mut plan, &id, &content, template_id.as_deref(), merge_priority, &expected_hash)?;
             // 在同一计划内迁移已生成的配置结果，保证草稿、命令和模板绑定一起提交或恢复。
             if let Some(name) = name {
                 rename_service::rename(paths, &mut plan, ast, &profile,
                     inventory, config(inventory, &id)?, &name)?;
             }
         }
-        Change::CreateAlias { kind, launcher, name, content, template_id } =>
+        Change::CreateAlias { kind, launcher, name, content, template_id, merge_priority } =>
             create_alias(paths, ast, &profile, inventory, &mut plan, kind, &launcher, &name,
-                &content, template_id.as_deref())?,
+                &content, template_id.as_deref(), merge_priority)?,
         Change::DeleteTemplate { id } => {
             let target = plan.after_state.templates.iter().find(|t| t.id == id).ok_or("模板不存在。")?;
             plan.label = format!("删除通用配置「{}」", target.name);
@@ -299,6 +313,10 @@ pub fn prepare(
             let entry = inventory.configs.iter().find(|c| c.aliases.contains(&name)).ok_or("别名不存在。")?;
             alias_service::remove_alias(paths, &mut plan, ast, &profile, entry, &name)?;
             plan.label = format!("移除别名入口 {name}");
+        }
+        Change::SetCodexLauncher { id, launcher, expected_hash } => {
+            crate::launcher_service::set_launcher(paths, &mut plan, ast, &profile,
+                config(inventory, &id)?, &launcher, &expected_hash)?;
         }
         Change::DeleteConfig { id, expected_hash } => {
             alias_service::delete_config(paths, &mut plan, ast, &profile,
@@ -316,99 +334,15 @@ pub fn prepare(
             plan.after_state.imports.push(ImportedConfig { path: resolved.to_string_lossy().into(), kind });
             plan.label = "手动导入已有配置（不自动绑定模板）".into();
         }
-        Change::RestoreBackup { id } => restore(paths, &mut plan, &id)?,
-        Change::SaveConfigGroup { id, name, kind } => {
-            plan.after_state.config_groups =
-                config_groups::save(&plan.before_state, id.as_deref(), &name, kind)?;
-            plan.label = format!("{}别名分组「{}」",
-                if id.is_some() { "重命名" } else { "新建" }, name.trim());
+        Change::RestoreBackup { id } => {
+            let backup = backup.filter(|backup| backup.id == id).ok_or("恢复计划缺少已校验的备份。")?;
+            restore(&mut plan, backup)?;
         }
-        Change::DeleteConfigGroup { id } => {
-            plan.after_state.config_groups = config_groups::delete(&plan.before_state, &id)?;
-            plan.label = "删除别名分组，保留全部配置".into();
-            plan.notices.push("只删除分组容器，成员回到未分组；配置文件、别名入口及模板绑定保持不变。".into());
-        }
-        Change::AssignConfigGroup { config_id, group_id } => {
-            plan.after_state.config_groups = config_groups::assign(
-                &plan.before_state, inventory, &config_id, group_id.as_deref(),
-            )?;
-            plan.label = "调整别名配置的分组归属".into();
-        }
-        // 排序仅调整展示元数据，不触碰任何受管文件，也不改变绑定关系。
-        Change::ReorderTemplates { kind, order } => {
-            // 依据重排前的既有列表校验，保证传入顺序是当前集合的完整重排（快速失败，不做静默修补）。
-            let current: Vec<String> = plan.before_state.templates.iter()
-                .filter(|t| t.kind == kind).map(|t| t.id.clone()).collect();
-            let mut sorted = order.clone();
-            sorted.sort();
-            let mut expected = current.clone();
-            expected.sort();
-            if sorted != expected {
-                return Err("通用配置列表已变化，请刷新后重新排序。".into());
-            }
-            let rank: std::collections::HashMap<&str, usize> = order.iter()
-                .enumerate().map(|(index, id)| (id.as_str(), index)).collect();
-            let key = |t: &Template| rank.get(t.id.as_str()).copied().unwrap_or(usize::MAX);
-            let mut next: Vec<Template> = plan.after_state.templates.iter().filter(|t| t.kind == kind)
-                .cloned().collect();
-            next.sort_by_key(&key);
-            // 只替换同类型条目的槽位，其他产品页签中的模板相对顺序保持原状。
-            let position: Vec<usize> = plan.after_state.templates.iter().enumerate()
-                .filter(|(_, t)| t.kind == kind).map(|(index, _)| index).collect();
-            for (slot, template) in position.into_iter().zip(next) {
-                plan.after_state.templates[slot] = template;
-            }
-            let changed = serde_json::to_string(&plan.after_state.templates).map_err(|e| e.to_string())?
-                != serde_json::to_string(&plan.before_state.templates).map_err(|e| e.to_string())?;
-            if !changed { return Err("没有需要保存的变化。".into()); }
-            plan.label = "调整通用配置显示顺序".into();
-            plan.notices.push("仅调整侧栏显示顺序，不影响任何已保存内容或文件绑定。".into());
-        }
-        Change::ReorderConfigs { order } => {
-            if order.is_empty() {
-                return Err("显示顺序不能为空。".into());
-            }
-            // 前端只提交当前产品页签的完整 id 集合（与 ReorderTemplates 的 kind 过滤语义一致）。
-            // 校验：order 中每个 id 都在清单里且同属一种类型，且恰好覆盖该类型的全部文件。
-            let mut kind_of: Option<Kind> = None;
-            for id in &order {
-                let entry = inventory.configs.iter().find(|c| &c.id == id)
-                    .ok_or("配置文件清单已变化，请刷新后重新排序。")?;
-                match kind_of {
-                    None => kind_of = Some(entry.kind),
-                    Some(k) if k != entry.kind => return Err("排序顺序混入了不同应用类型的文件。".into()),
-                    _ => {}
-                }
-            }
-            // 不使用 .into()：错误类型 E 由 ? 自动从 &str 转换为 Result 的 String，避免类型参数歧义。
-            let kind = kind_of.ok_or("显示顺序不能为空。")?;
-            let mut sorted = order.clone();
-            sorted.sort();
-            let mut expected: Vec<String> = inventory.configs.iter()
-                .filter(|c| c.kind == kind).map(|c| c.id.clone()).collect();
-            expected.sort();
-            if sorted != expected {
-                return Err("配置文件清单已变化，请刷新后重新排序。".into());
-            }
-            // 合并：本次类型使用最新顺序；其他类型的既有顺序原样保留在队尾，
-            // 未登记过的新文件按清单默认顺序追加，保证全局 configOrder 始终完整。
-            let mut merged = order.clone();
-            for id in &plan.before_state.config_order {
-                if !merged.iter().any(|m| m == id)
-                    && inventory.configs.iter().any(|c| &c.id == id && c.kind != kind) {
-                    merged.push(id.clone());
-                }
-            }
-            for entry in &inventory.configs {
-                if !merged.iter().any(|m| m == &entry.id) {
-                    merged.push(entry.id.clone());
-                }
-            }
-            plan.after_state.config_order = merged;
-            plan.label = "调整别名的配置文件显示顺序".into();
-            plan.notices.push("仅调整卡片显示顺序，不影响文件本身及模板绑定。".into());
-        }
+        Change::ReorderTemplates { .. } | Change::ReorderConfigs { .. }
+        | Change::SaveConfigGroup { .. } | Change::DeleteConfigGroup { .. }
+        | Change::AssignConfigGroup { .. } => return Err("布局操作必须使用轻量保存入口。".into()),
     }
+    plan.after_state = state::finish_layout(&plan.before_state, &plan.after_state)?;
     plan.notices.sort();
     plan.notices.dedup();
     let mut comparable = plan.after_state.clone();
@@ -418,5 +352,21 @@ pub fn prepare(
     if same_state && plan.files.iter().all(|f| f.before == f.after) {
         return Err("没有需要保存的变化。".into());
     }
+    compact_guards(plan)
+}
+
+fn compact_guards(mut plan: ApplyPlan) -> Result<ApplyPlan> {
+    // 计划生成后才压缩只读守卫，避免破坏别名编辑所需的 profile 原始上下文。
+    let mut writes = Vec::new();
+    for change in plan.files {
+        if change.before == change.after {
+            plan.guards.push(FileGuard {
+                path: change.path,
+                hash: change.before.as_deref().map(files::unpack).transpose()?.map(|bytes| files::hash(&bytes)),
+                identity: change.before_identity,
+            });
+        } else { writes.push(change); }
+    }
+    plan.files = writes;
     Ok(plan)
 }

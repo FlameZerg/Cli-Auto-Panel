@@ -1,18 +1,17 @@
 # CLI Auto Panel
 
-一个面向 Windows 的本地桌面配置管理面板，用于集中管理 Codex 与 Claude Code 的别名配置、通用配置和 PowerShell 命令入口。
+一个面向 Windows 的本地桌面配置管理面板，用于集中管理 Claude Code 与 Codex 的别名配置、通用配置和 PowerShell 命令入口。
 
-> 当前版本：`0.1.0`  
 > 技术栈：React + TypeScript + Vite + Tauri 2 + Rust  
 > 运行方式：本地桌面应用，不依赖常驻云端服务
 
 ## ✨ 项目简介
 
-CLI Auto Panel 解决多个 CLI 配置文件之间重复编辑、手动维护别名和配置同步困难的问题。
+CLI Auto Panel 解决 Claude Code 与 Codex 无法无法同时运行多个API，多个配置文件之间重复编辑、手动维护别名和配置同步困难的问题。
 
 它可以：
 
-- 发现并管理 Codex 与 Claude Code 的命名配置文件；
+- 发现并管理 Claude Code 与 Codex 的命名配置文件；
 - 在单个界面中编辑 TOML / JSON 配置；
 - 创建、导入、重命名和删除配置别名；
 - 从配置文件提取通用配置，应用到多个绑定文件；
@@ -70,7 +69,7 @@ flowchart TB
 
 Claude Code 的 `settings.local.json` 属于本地配置，不会被作为别名配置自动管理。
 
-Codex 和 Claude Code 的配置根目录可以通过环境变量覆盖：
+Claude Code 与 Codex 的配置根目录可以通过环境变量覆盖：
 
 ```text
 CODEX_HOME
@@ -102,7 +101,7 @@ CLAUDE_CONFIG_DIR
 %USERPROFILE%\Documents\PowerShell\Microsoft.PowerShell_profile.ps1
 ```
 
-它会解析已有的 Codex / Claude Code 命令入口，并在变更计划确认后维护对应内容。应用不会自动执行 profile 中的命令；已经打开的 PowerShell 终端也不会自动重载，通常需要新开终端才能看到别名变化。
+它会解析已有的 Claude Code 与 Codex 命令入口，并在变更计划确认后维护对应内容。应用不会自动执行 profile 中的命令；已经打开的 PowerShell 终端也不会自动重载，通常需要新开终端才能看到别名变化。
 
 ### 本地状态与恢复
 
@@ -116,54 +115,7 @@ CLAUDE_CONFIG_DIR
 
 ## 🔒 安全与隐私
 
-本项目会读取和修改用户本地的 CLI 配置文件、PowerShell profile 以及面板本地状态。配置文件可能包含 API 密钥、令牌、账号信息或其他敏感内容，请注意：
-
-- 首次使用前先备份 Codex / Claude Code 配置和 PowerShell profile；
-- 不要把 `panel.sqlite3`、恢复日志、备份文件或实际配置文件上传到公开仓库；
-- 不要在 Issue、日志或截图中暴露真实密钥、令牌、用户目录和配置内容；
-- 预览时确认变更范围，尤其是删除、批量同步和 profile 修改；
-- 如果配置曾经包含密钥，即使后来从配置文件中删除，也应检查本地备份和恢复日志；
-- 本项目当前没有实现云端同步或远程配置服务，所有状态设计上保存在本机；
-- “本地运行”不代表配置天然安全，请结合操作系统账户权限和磁盘加密策略进行保护。
-
-项目源码中不应提交以下文件：
-
-```text
-.env
-.env.*
-auth.json
-*.sqlite
-*.sqlite3
-*.db
-*.bak
-*.backup
-*.pfx
-*.p12
-backups/
-artifacts/
-```
-
-发布前还应检查 `.claude/` 等开发辅助目录是否需要从公开仓库中排除。
-
-## 💻 开发环境
-
-建议使用：
-
-- Windows 10 或更高版本；
-- Node.js 22；
-- npm；
-- Rust stable MSVC 工具链；
-- Windows WebView2 Runtime；
-- 可用的 PowerShell。
-
-依赖版本和锁定版本分别记录在：
-
-```text
-package.json
-package-lock.json
-src-tauri/Cargo.toml
-src-tauri/Cargo.lock
-```
+本项目会读取和修改用户本地的 CLI 配置文件、PowerShell profile 以及面板本地状态。配置文件可能包含 API 密钥、令牌、账号信息或其他敏感内容。
 
 ## 🚀 开始开发
 
@@ -261,10 +213,4 @@ npm run build
 
 ## 🤝 贡献
 
-欢迎提交 Issue 或 Pull Request。提交前请确保：
-
-- 不包含真实配置、密钥、令牌、数据库、备份或日志；
-- 不包含个人用户目录、机器路径和内部截图；
-- 变更范围与现有配置安全边界一致；
-- 代码、注释和面向用户的错误信息保持清晰；
-- 不将构建产物和本地开发辅助文件误加入提交。
+欢迎提交 Issue 或 Pull Request。
