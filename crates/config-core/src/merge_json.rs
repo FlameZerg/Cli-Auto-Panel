@@ -2,6 +2,7 @@ use crate::{merge_policy::{self, Overrides}, model::{MergePriority, Result}};
 use serde::de::{self, MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer};
 use serde_json::{Map, Number, Value};
+use std::collections::HashSet;
 use std::fmt;
 
 struct StrictValue(Value);
@@ -82,14 +83,20 @@ fn merge_object(
     parent: &[String], overrides: &mut Overrides, priority: MergePriority,
 ) -> Map<String, Value> {
     let mut result = current.clone();
-    let keys: std::collections::BTreeSet<_> = previous.keys().chain(selected.keys()).collect();
+    // 保留输入配置的键顺序；仅对重复键去重，避免新建草稿被字典序重排。
+    let mut seen = HashSet::new();
+    let keys: Vec<String> = previous.keys().chain(selected.keys())
+        .filter_map(|key| {
+            let key = key.to_owned();
+            seen.insert(key.clone()).then_some(key)
+        }).collect();
     for key in keys {
         let path: Vec<_> = parent.iter().cloned().chain(std::iter::once(key.clone())).collect();
         if priority == MergePriority::Current && merge_policy::protected(overrides, &path) { continue; }
-        let value = merge_value(current.get(key), previous.get(key), selected.get(key), &path, overrides, priority);
+        let value = merge_value(current.get(&key), previous.get(&key), selected.get(&key), &path, overrides, priority);
         match value {
             Some(value) => { result.insert(key.clone(), value); }
-            None => { result.remove(key); }
+            None => { result.remove(&key); }
         }
     }
     result

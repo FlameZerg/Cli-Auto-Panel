@@ -1,5 +1,6 @@
 use crate::{merge_policy::{self, Overrides}, model::{MergePriority, Result}};
 use toml_edit::{DocumentMut, Item, TableLike, Value};
+use std::collections::HashSet;
 
 pub fn parse(text: &str) -> Result<DocumentMut> {
     let doc = text.parse::<DocumentMut>().map_err(|error| format!("TOML 解析失败：{error}"))?;
@@ -78,8 +79,13 @@ fn merge_table(
     target: &mut dyn TableLike, previous: &dyn TableLike, selected: &dyn TableLike,
     parent: &[String], overrides: &mut Overrides, priority: MergePriority,
 ) {
-    let keys: std::collections::BTreeSet<_> = previous.iter().chain(selected.iter())
-        .map(|(key, _)| key.to_owned()).collect();
+    // 保留输入配置的表项顺序；仅对重复键去重，避免新建草稿被字典序重排。
+    let mut seen = HashSet::new();
+    let keys: Vec<String> = previous.iter().chain(selected.iter())
+        .filter_map(|(key, _)| {
+            let key = key.to_owned();
+            seen.insert(key.clone()).then_some(key)
+        }).collect();
     for key in keys {
         let path: Vec<_> = parent.iter().cloned().chain(std::iter::once(key.clone())).collect();
         if priority == MergePriority::Current && merge_policy::protected(overrides, &path) { continue; }
