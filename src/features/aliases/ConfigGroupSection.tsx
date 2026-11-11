@@ -3,9 +3,11 @@ import type { Bootstrap, ConfigEntry, ConfigGroup, ConfigGroupChange } from "../
 
 // 每组独立处理拖拽，只替换当前组在全量顺序中的槽位，不产生跨组隐式移动。
 export function ConfigGroupSection({ group, configs, allConfigs, groups, data, selected,
-  disabled, searching, onSelect, onAssign, onReorder, onRename, onDelete }: {
+  disabled, searching, groupCard, groupDragging, groupOver, onSelect, onAssign, onReorder, onRename, onDelete }: {
   group: ConfigGroup | null; configs: ConfigEntry[]; allConfigs: ConfigEntry[];
   groups: ConfigGroup[]; data: Bootstrap; selected: string | null; disabled: boolean; searching: boolean;
+  groupCard?: ReturnType<ReturnType<typeof useDragSort<ConfigGroup>>["card"]>;
+  groupDragging: boolean; groupOver: boolean;
   onSelect: (config: ConfigEntry) => void;
   onAssign: (change: ConfigGroupChange) => void;
   onReorder: (order: string[], cancel: () => void) => void;
@@ -20,7 +22,9 @@ export function ConfigGroupSection({ group, configs, allConfigs, groups, data, s
   });
   const title = group?.name ?? "未分组";
 
-  return <section className="config-group" aria-label={`${title}分组`}>
+  return <section {...groupCard} onClickCapture={groupCard?.onClick}
+    className={`config-group ${groupDragging ? "dragging" : ""} ${groupOver ? "drag-over" : ""}`}
+    aria-label={`${title}分组`}>
     <header className="config-group-heading">
       <h3 title={title}>{title}<span>{configs.length}</span></h3>
       {group && <div className="config-group-actions">
@@ -48,19 +52,21 @@ function ConfigCard({ config, data, groups, groupId, disabled, selected, draggin
 }) {
   const binding = data.state.bindings.find((item) => item.configId === config.id);
   const template = data.state.templates.find((item) => item.id === binding?.templateId);
-  // 继续使用实际应用快照判断同步状态，分组不改变配置或绑定的健康信息。
+  // 正常状态仅显示已同步或未同步；历史覆盖记录不作为额外的警告状态。
   const health = config.error ? "读取错误" : binding
     ? binding.lastHash !== config.hash ? "外部已修改"
-      : template?.content !== binding.appliedContent ? "待同步" : "已同步"
-    : "未绑定";
-  const warning = config.error || health === "外部已修改" || health === "待同步";
+      : template?.content !== binding.appliedContent ? "未同步" : "已同步"
+    : "未同步";
+  // 无绑定是正常选择；只有读取错误、外部变化或已绑定但未同步时保留警告。
+  const warning = config.error || health === "外部已修改" || (!!binding && health === "未同步");
   const label = config.aliases.join(" / ") || config.path.split(/[\\/]/).pop() || "手动导入";
 
   return <div className={`config-card-shell ${selected ? "selected" : ""}`}>
     <button disabled={disabled} {...card}
       className={`config-card ${dragging ? "dragging" : ""} ${over ? "drag-over" : ""} ${selected ? "selected" : ""}`}>
       <div className="card-label"><strong>{config.aliases.join(" / ") || "手动导入"}</strong>
-        <span className={`status ${warning ? "warning" : binding ? "synced" : ""}`}>{health}</span></div>
+        <span className={`status ${warning ? "warning" : binding ? "synced" : ""}`}
+          title={config.error || health}>{health}</span></div>
       <span className="card-path" title={config.path}>{config.path.split(/[\\/]/).pop()}</span>
       <span className="card-template">{template ? template.name : "保留原配置，可手动选择模板"}</span>
     </button>

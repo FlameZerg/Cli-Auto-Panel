@@ -174,7 +174,11 @@ main > .welcome { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior-
 .config-groups-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 0 14px 12px; }
 .config-groups-toolbar > span { font-size: 11px; color: var(--muted); }
 .config-groups-toolbar > button { padding: 5px 8px; font-size: 11px; }
-.config-group { min-width: 0; border: 1px solid var(--border-control); border-radius: 9px; background: var(--surface); }
+/* 整组拖拽沿用卡片的状态反馈，标题和空白可拖，内层控件仍独立操作。 */
+.config-group { min-width: 0; border: 1px solid var(--border-control); border-radius: 9px; background: var(--surface); transition: transform .16s ease, opacity .12s ease; }
+.config-group[draggable="true"] > .config-group-heading { cursor: grab; }
+.config-group.dragging { opacity: .45; }
+.config-group.drag-over { box-shadow: 0 -2px 0 0 var(--card-selected-bar); }
 .config-group-heading { display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 10px 8px; border-bottom: 1px solid var(--line); }
 .config-group-heading h3 { min-width: 0; margin: 0; color: var(--col-title-text); font-size: 16px; font-weight: 700; overflow-wrap: anywhere; }
 .config-group-heading h3 > span { margin-left: 6px; font-size: 10px; font-weight: 400; color: var(--muted); }
@@ -266,24 +270,53 @@ summary { cursor: pointer; line-height: 1.9; }
 .history-row strong { display: block; font-size: 12px; font-weight: 500; }
 .history-row small { display: block; margin-top: 9px; font-size: 10px; color: var(--history-small); }
 .modal { border: 1px solid var(--modal-border); border-radius: 12px; color: var(--modal-text); background: var(--modal-bg); padding: 0; width: 510px; max-width: 92vw; max-height: 90vh; }
-.modal.wide { width: 1100px; }
+/* 差异预览保留适度窗口留白；普通新建和改名弹窗保持原样。 */
+.modal.wide { width: 92vw; max-width: 92vw; height: 88vh; max-height: 88vh; }
+.modal.wide[open] { display: flex; flex-direction: column; }
 .modal::backdrop { background: var(--backdrop); }
 .modal-heading { display: flex; align-items: center; justify-content: space-between; padding: 21px 24px; border-bottom: 1px solid var(--line); gap: 20px; }
 .modal-heading h2 { font-size: 16px; margin: 0; }
 .modal-content { padding: 23px; max-height: 65vh; overflow-y: auto; display: flex; flex-direction: column; gap: 14px; }
 .modal-content p { margin: 0; font-size: 12px; }
 .modal-footer { display: flex; justify-content: flex-end; gap: 10px; padding: 17px 24px; border-top: 1px solid var(--line); }
-.file-diff { background: var(--diff-bg); border: 1px solid var(--diff-border); padding: 12px; border-radius: 7px; }
-.file-diff summary { font-size: 11px; overflow-wrap: anywhere; }
+.modal.wide .modal-heading, .modal.wide .modal-footer { flex-shrink: 0; padding: 12px 16px; }
+.modal.wide .modal-content { flex: 1; min-height: 0; max-height: none; padding: 12px 16px; gap: 10px; }
+/* 单文件只让代码区域滚动，多文件由弹窗正文滚动，避免叠加固定高度和多层留白。 */
+.preview-files { display: flex; flex-direction: column; flex-shrink: 0; min-width: 0; gap: 12px; }
+.preview-files > .code-diff { flex-shrink: 0; }
+.preview-files.single-file { flex: 1; min-height: 0; }
+.preview-files.single-file > .code-diff { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+.preview-files.single-file .diff-code { flex: 1; min-height: 0; }
+/* 双栏各自使用共享编辑器；单文件填满剩余高度，多文件保持有限的代码滚动区域。 */
+.split-code-editors { display: flex; flex-direction: column; min-width: 0; min-height: 0; height: clamp(280px, 48vh, 520px); }
+.preview-files.single-file .split-code-editors { flex: 1; height: auto; }
+.split-editor-panes { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); flex: 1; min-height: 0; }
+.split-editor-pane { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.split-editor-pane:first-child { border-right: 1px solid var(--diff-border); }
+.split-editor-pane > .code-editor-shell { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+.split-editor-pane .code-editor { flex: 1; height: auto; min-height: 0; border: none; border-radius: 0; }
+.split-editor-pane .cm-editor .cm-content { min-height: 0; }
+.split-editor-pane .cm-foldGutter { display: none; }
+/* 双栏标记不复用原行内预览的块样式，避免影响 CodeMirror 正文换行和语法元素布局。 */
+.cm-split-added-line { background: var(--diff-add-bg) !important; }
+.cm-split-removed-line { background: var(--diff-remove-bg) !important; }
+.cm-line.cm-split-added-line, .cm-line.cm-split-added-line span { color: var(--diff-add-text) !important; }
+.cm-line.cm-split-removed-line, .cm-line.cm-split-removed-line span { color: var(--diff-remove-text) !important; }
+.cm-line.cm-split-added-line[data-no-newline="true"]::after, .cm-line.cm-split-removed-line[data-no-newline="true"]::after { content: " ↵（末行无换行）"; color: var(--muted); font-size: 10px; }
+.cm-diff-spacer { pointer-events: none; }
+/* 显示切换只改变差异布局，不提供文件折叠，也不隐藏同步涉及的其他文件。 */
+.diff-view-toggle { display: flex; flex-shrink: 0; gap: 8px; }
+.diff-view-toggle > button { padding: 5px 10px; font-size: 11px; }
+.diff-view-toggle > button[aria-pressed="true"] { border-color: var(--card-selected-border); background: var(--card-selected-bg); }
 .code-diff { min-width: 0; overflow: hidden; border: 1px solid var(--diff-border); border-radius: 7px; background: var(--diff-pre-bg); }
-.file-diff .code-diff { margin-top: 12px; }
-.diff-heading { padding: 10px 12px; display: flex; justify-content: space-between; flex-wrap: wrap; gap: 10px; font-size: 11px; color: var(--muted); border-bottom: 1px solid var(--diff-border); }
-.diff-legend { display: inline-flex; gap: 12px; }
+.diff-heading { padding: 8px 12px; display: flex; flex-shrink: 0; justify-content: space-between; gap: 10px; font-size: 11px; color: var(--muted); border-bottom: 1px solid var(--diff-border); }
+.diff-file-heading { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.diff-legend { display: inline-flex; flex-shrink: 0; gap: 12px; }
 .diff-removed { color: var(--diff-remove-text); }
 .diff-added { color: var(--diff-add-text); }
-.diff-unchanged { margin: 0; padding: 10px 12px; color: var(--muted); font-size: 11px; }
-/* 每行保留原、新行号及正负标记；长行水平滚动，不因换行破坏对齐。 */
-.diff-code { max-height: 430px; overflow: auto; color: var(--diff-pre-text); font: 12px/1.8 Consolas, "Cascadia Code", monospace; }
+.diff-unchanged { margin: 0; flex-shrink: 0; padding: 10px 12px; color: var(--muted); font-size: 11px; }
+/* 单栏保留原始行形和横向滚动；双栏在固定宽度内换行，不改变差异数据。 */
+.diff-code { overflow: auto; color: var(--diff-pre-text); font: 12px/1.8 Consolas, "Cascadia Code", monospace; }
 .diff-line { display: flex; min-width: 100%; width: max-content; }
 .diff-number { width: 5ch; flex-shrink: 0; padding: 0 8px; text-align: right; color: var(--muted); opacity: .8; user-select: none; border-right: 1px solid var(--diff-border); }
 .diff-sign { width: 3ch; flex-shrink: 0; text-align: center; user-select: none; }
@@ -291,6 +324,7 @@ summary { cursor: pointer; line-height: 1.9; }
 .diff-remove { background: var(--diff-remove-bg); color: var(--diff-remove-text); }
 .diff-add { background: var(--diff-add-bg); color: var(--diff-add-text); }
 .diff-no-newline { color: var(--muted); font-size: 10px; }
+.diff-column-heading { flex-shrink: 0; padding: 6px 12px; background: var(--diff-bg); color: var(--muted); border-bottom: 1px solid var(--diff-border); font-size: 11px; }
 @media (max-width: 1200px) {
   .rail { width: 190px; min-width: 190px; padding-inline: 11px; }
   .workspace { grid-template-columns: 250px minmax(0, 1fr); }

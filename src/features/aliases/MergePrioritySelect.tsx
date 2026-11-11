@@ -6,11 +6,11 @@ interface Props {
   onChange: (value: MergePriority) => void;
 }
 
-// 编辑与新建共用选项和行为说明；选择只更新草稿，保存时才应用到文件。
+// 保留原有短标签；合并选择不改变已保存的绑定关系。
 export function MergePrioritySelect({ value, disabled, onChange }: Props) {
   const description = value === "current"
-    ? "优先保留手动修改与删除；未手动改动的通用字段继续同步。"
-    : "同名字段采用通用值；保存会覆盖冲突值，切回当前配置优先不会自动还原。";
+    ? "同名字段优先使用当前配置。"
+    : "同名字段优先使用通用配置。";
   return <select aria-label="合并优先级" title={description} value={value} disabled={disabled}
     onChange={(event) => onChange(event.target.value as MergePriority)}>
     <option value="current">当前配置优先</option>

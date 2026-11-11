@@ -114,20 +114,26 @@ fn merge_value(
             let object = merge_object(current_object,
                 previous.and_then(Value::as_object).unwrap_or(&empty),
                 selected.and_then(Value::as_object).unwrap_or(&empty), path, overrides, priority);
-            return if object.is_empty() && selected.is_none() { None } else { Some(Value::Object(object)) };
+            // 当前优先保留已有空对象，只有通用优先才同步移除已删除的空公共对象。
+            return if object.is_empty() && selected.is_none() && priority == MergePriority::Template {
+                None
+            } else { Some(Value::Object(object)) };
         }
     }
-    // 通用优先只覆盖模板仍定义的冲突值；对象已逐键处理，数组及类型冲突整体取通用值。
-    if priority == MergePriority::Template && selected.is_some() { return selected.cloned(); }
+    // 公共字段跟随新版，旧公共字段被删除时同步删除；对象已逐键处理，别名独有子键保持原样。
+    if priority == MergePriority::Template && (selected.is_some() || previous.is_some()) {
+        return selected.cloned();
+    }
     if merge_policy::has_protected_children(overrides, path) {
         merge_policy::preserve(overrides, path);
         return current.cloned();
     }
     if current == previous {
-        return if current == selected { current.cloned() } else { selected.cloned() };
+        // 已有同名值始终服从当前优先；两份基线都没有该字段时，才补入通用的新字段。
+        return current.or(selected).cloned();
     }
     if previous.is_none() && current == selected { return current.cloned(); }
-    // 记录旧字段的手动删除，供当前配置优先模式持续保护。
+    // 当前优先持续保护手动修改与删除，通用优先分支才重新应用公共值。
     merge_policy::preserve(overrides, path);
     current.cloned()
 }

@@ -9,6 +9,7 @@ import { CreateAliasForm } from "./features/aliases/CreateAliasForm";
 import { ImportForm } from "./features/aliases/ImportForm";
 import { TemplateEditor } from "./features/common-config/TemplateEditor";
 import { PreviewDialog } from "./features/preview/PreviewDialog";
+import { previewEditor } from "./features/preview/previewEditing";
 import { useTheme } from "./theme";
 import type { Bootstrap, Change, CodexLauncher, ConfigDraft, ConfigEntry, Kind, Preview, TemplateDraft } from "./types";
 
@@ -39,6 +40,9 @@ export function App() {
   const [operationNotices, setOperationNotices] = useState<string[]>([]);
   const [preview, setPreview] = useState<Preview | null>(null);
   const [preparedChange, setPreparedChange] = useState<Change | null>(null);
+  const [previewStale, setPreviewStale] = useState(false);
+  // 同步作废计划标识，阻止修改后同一事件周期仍提交旧预览。
+  const validPreview = useRef<string | null>(null);
   const [search, setSearch] = useState("");
   const sequence = useRef(0);
   const closingRef = useRef(false);
@@ -153,7 +157,7 @@ export function App() {
     const name = target.kind === "codex" ? filename.slice(7, -5) : filename.slice(9, -5);
     // 读取成功后再一次性切换条目，避免异步读取期间卸载当前编辑器造成画面闪烁。
     setSelected(target.id); setPage("config"); setDirty(false);
-    // 旧绑定省略优先级时保持原有行为，其他绑定恢复各自已保存的选择。
+    // 恢复绑定已保存的优先级，后续通用同步沿用该选择，不迁移历史状态。
     setConfigDraft({ id: target.id, name, content: document.content, hash: document.hash,
       notices: document.notices, templateId: binding?.templateId || null,
       mergePriority: binding?.mergePriority ?? "current" });
@@ -170,6 +174,7 @@ export function App() {
     // 分组与排序共用互斥的静默提交，不清空编辑器草稿或未保存标记。
     // 未获得回执时取消乐观排序并读取真实状态；不能把响应失败等同于确定未提交。
     if (change.type === "reorderTemplates" || change.type === "reorderConfigs"
+      || change.type === "reorderConfigGroups"
       || change.type === "saveConfigGroup" || change.type === "deleteConfigGroup" || change.type === "assignConfigGroup") {
       void perform("保存列表布局…", async () => {
         setOrganizing(true);
@@ -194,6 +199,7 @@ export function App() {
     void perform(previewOnly ? "生成差异预览…" : "执行配置操作…", async () => {
       const result = await api.prepare(data.state.revision, change, data.state.layoutRevision ?? 0);
       if (previewOnly) {
+        validPreview.current = result.id; setPreviewStale(false);
         setPreparedChange(change); setPreview(result);
       } else {
         await commitPlan(result, change);
@@ -273,8 +279,33 @@ export function App() {
   async function commit() {
     const currentPreview = preview;
     const currentChange = preparedChange;
-    if (!currentPreview || !currentChange) return;
+    if (!currentPreview || !currentChange || previewStale || validPreview.current !== currentPreview.id) return;
     await perform("提交并校验配置…", () => commitPlan(currentPreview, currentChange), true);
+  }
+
+  function editPreview(path: string, content: string) {
+    if (!data || !preview || busyRef.current || !preparedChange) return;
+    const editor = previewEditor(data, preview, preparedChange);
+    if (!editor || editor.path !== path) return;
+    // 回写原草稿，不直接改预览文件或已有计划；哈希、名称及绑定参数仍保持原来的校验基线。
+    if (preparedChange.type !== "saveConfig" && preparedChange.type !== "saveTemplate") return;
+    validPreview.current = null; setPreviewStale(true); setDirty(true);
+    setPreparedChange({ ...preparedChange, content });
+    if (preparedChange.type === "saveConfig") {
+      setConfigDraft((draft) => draft && draft.id === preparedChange.id ? { ...draft, content } : draft);
+    } else {
+      setTemplateDraft((draft) => draft && draft.id === preparedChange.id ? { ...draft, content } : draft);
+    }
+  }
+
+  function repreview() {
+    if (!data || !preparedChange || !previewStale || busyRef.current) return;
+    // 重新走既有解析、合并及文件守卫；失败继续保留编辑内容，绝不恢复旧计划的提交能力。
+    const change = preparedChange;
+    void perform("重新生成差异预览…", async () => {
+      const result = await api.prepare(data.state.revision, change, data.state.layoutRevision ?? 0);
+      validPreview.current = result.id; setPreviewStale(false); setPreview(result);
+    });
   }
 
   function recover() {
@@ -377,6 +408,7 @@ export function App() {
             <ConfigGroups key={kind} data={data} kind={kind} configs={configs} search={search}
               selected={page === "config" ? selected : null} disabled={disabled} saving={organizing} error={error}
               onSelect={chooseEntry} onChange={(change, onSaved) => applyChange(change, false, undefined, onSaved)}
+              onReorderGroups={(order, cancel) => applyChange({ type: "reorderConfigGroups", kind, order }, false, cancel)}
               onReorder={(order, cancel) => applyChange({ type: "reorderConfigs", order }, false, cancel)} />
             <div className="column-footer">{data.inventory.configs.length} 份文件 · {data.inventory.configs.reduce((sum, c) => sum + c.aliases.length, 0)} 个命令入口</div>
           </section>
@@ -420,8 +452,10 @@ export function App() {
       {data && <footer className="app-footer"><span title={data.profilePath}>PowerShell：{data.profilePath}</span>
         <span>保存后无需常驻面板</span></footer>}
     </main>
-    {preview && <PreviewDialog preview={preview} busy={!!busy}
-      onClose={() => { setPreview(null); setPreparedChange(null); }}
+    {preview && <PreviewDialog preview={preview} busy={!!busy} stale={previewStale} error={error}
+      editor={data ? previewEditor(data, preview, preparedChange) : null}
+      onEdit={editPreview} onRepreview={repreview}
+      onClose={() => { validPreview.current = null; setPreviewStale(false); setPreview(null); setPreparedChange(null); }}
       onCommit={() => void commit()} />}
   </div>;
 }

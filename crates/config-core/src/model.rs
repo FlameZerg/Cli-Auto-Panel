@@ -44,7 +44,7 @@ pub struct Binding {
     pub applied_content: String,
     pub applied_revision: u64,
     pub last_hash: String,
-    // 当前优先时持续保护冲突值与手动删除；缺省字段兼容已有状态及历史备份。
+    // 当前优先保护本地修改与删除；通用优先重新计算，缺省兼容旧数据库与历史备份。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub overrides: Vec<Vec<String>>,
 }
@@ -173,6 +173,8 @@ pub enum Change {
     // 应用拖拽排序：一份模板显示顺序、一份别名配置显示顺序，均为全量 id 列表。
     ReorderTemplates { kind: Kind, order: Vec<String> },
     ReorderConfigs { order: Vec<String> },
+    // 分组重排仅修改既有布局数组，不新增顺序字段或触碰成员文件。
+    ReorderConfigGroups { kind: Kind, order: Vec<String> },
     // 分组操作只提交面板元数据，不改写配置文件或命令入口。
     SaveConfigGroup { id: Option<String>, name: String, kind: Kind },
     DeleteConfigGroup { id: String },

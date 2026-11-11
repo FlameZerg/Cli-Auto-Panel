@@ -19,7 +19,8 @@ export function CreateAliasForm({ kind, data, disabled, onSubmit, onDirty, onErr
   const [name, setName] = useState("");
   const [launcher, setLauncher] = useState(kind === "codex" ? "codex" : "claude");
   const [templateId, setTemplateId] = useState("");
-  const [mergePriority, setMergePriority] = useState<MergePriority>("current");
+  // 新绑定默认采用通用字段值，后续同步仍由是否选择模板决定。
+  const [mergePriority, setMergePriority] = useState<MergePriority>("template");
   const [content, setContent] = useState(kind === "codex" ? "" : "{}\n");
   const [sourceId, setSourceId] = useState("");
   const [copying, setCopying] = useState(false);
@@ -65,7 +66,7 @@ export function CreateAliasForm({ kind, data, disabled, onSubmit, onDirty, onErr
           onChange={(e) => change(() => setTemplateId(e.target.value))}>
           <option value="">不应用</option>{templates.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
         </select></label>
-        {/* 新建也使用同一优先级，并纳入未保存提示与实时差异预览。 */}
+        {/* 新建与编辑共用合并选择，不改变持续同步的绑定关系。 */}
         <label>合并优先级<MergePrioritySelect value={mergePriority} disabled={disabled || !templateId}
           onChange={(value) => change(() => setMergePriority(value))} /></label>
       </div>

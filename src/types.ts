@@ -18,7 +18,7 @@ export interface Binding {
   appliedContent: string;
   appliedRevision: number;
   lastHash: string;
-  // 由后端维护的手动覆盖键路径，旧状态中可省略。
+  // 当前优先保护本地修改与删除的路径，通用优先重新计算；旧状态中可省略。
   overrides?: string[][];
 }
 
@@ -115,6 +115,8 @@ export type Change =
   | ConfigGroupChange;
 
 export type ConfigGroupChange =
+  // 分组顺序复用既有数组，只提交当前产品的完整分组排列。
+  | { type: "reorderConfigGroups"; kind: Kind; order: string[] }
   | { type: "saveConfigGroup"; id: string | null; name: string; kind: Kind }
   | { type: "deleteConfigGroup"; id: string }
   | { type: "assignConfigGroup"; configId: string; groupId: string | null };

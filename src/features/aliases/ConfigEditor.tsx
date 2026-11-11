@@ -54,13 +54,15 @@ export function ConfigEditor({ entry, draft, data, disabled, onChange,
       <p className="field-hint muted" title={filenameHint}>{filenameHint}</p>
       <div className="binding-row">
         <label className="check"><input type="checkbox" checked={!!draft.templateId} disabled={disabled || !templates.length}
-          onChange={(e) => onChange({ ...draft, templateId: e.target.checked ? templates[0]?.id || null : null })} />应用通用配置</label>
+          onChange={(e) => onChange({ ...draft, templateId: e.target.checked ? templates[0]?.id || null : null,
+            mergePriority: e.target.checked ? "template" : draft.mergePriority })} />应用通用配置</label>
         <select aria-label="选择通用配置" value={draft.templateId || ""} disabled={disabled}
-          onChange={(e) => onChange({ ...draft, templateId: e.target.value || null })}>
+          onChange={(e) => onChange({ ...draft, templateId: e.target.value || null,
+            mergePriority: e.target.value ? "template" : draft.mergePriority })}>
           {/* 选择项只显示通用配置名称，不展示内部同步版本。 */}
           <option value="">不应用通用配置</option>{templates.map((t) => <option value={t.id} key={t.id}>{t.name}</option>)}
         </select>
-        {/* 优先级随草稿保存；未应用通用配置时禁用，避免产生无效设置。 */}
+        {/* 新选择绑定默认应用通用值，持续同步由绑定开关控制。 */}
         <MergePrioritySelect value={draft.mergePriority} disabled={disabled || !draft.templateId}
           onChange={(mergePriority) => onChange({ ...draft, mergePriority })} />
       </div>

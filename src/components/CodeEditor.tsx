@@ -1,23 +1,23 @@
 import { useEffect, useMemo, useRef } from "react";
-import { basicSetup } from "codemirror";
-import { EditorView } from "@codemirror/view";
-import { Compartment, EditorState } from "@codemirror/state";
-import { json } from "@codemirror/lang-json";
-import { StreamLanguage } from "@codemirror/language";
-import { toml } from "@codemirror/legacy-modes/mode/toml";
+import { EditorView, type ViewUpdate } from "@codemirror/view";
+import { Compartment, EditorState, type Extension } from "@codemirror/state";
 import { useTheme } from "../theme";
 import { InlineNotice } from "./InlineNotice";
-import { editorSearch } from "./editorSearch";
+import { editorSetup, type EditorLanguage } from "./editorSetup";
 import { buildLineDiff } from "../features/preview/lineDiff";
 import { createInlineDiffDecorations, inlineDiffField, setInlineDiff } from "../features/preview/inlineDiff";
-import type { Kind } from "../types";
+
+const noExtensions: Extension = [];
 
 interface Props {
   value: string;
-  kind: Kind;
+  kind: EditorLanguage;
   onChange?: (value: string) => void;
   readOnly?: boolean;
   label?: string;
+  extensions?: Extension;
+  onReady?: (view: EditorView | null) => void;
+  onUpdate?: (update: ViewUpdate) => void;
   diff?: {
     after: string | null;
     loading: boolean;
@@ -25,13 +25,22 @@ interface Props {
   };
 }
 
-export function CodeEditor({ value, kind, onChange, readOnly = false, label = "配置编辑器", diff }: Props) {
+export function CodeEditor({ value, kind, onChange, readOnly = false, label = "配置编辑器",
+  extensions = noExtensions, onReady, onUpdate, diff }: Props) {
   const host = useRef<HTMLDivElement>(null);
   const view = useRef<EditorView | null>(null);
   const callback = useRef(onChange);
   const initialValue = useRef(value);
   const syncing = useRef(false);
   const readOnlyCompartment = useRef(new Compartment());
+  const extraCompartment = useRef(new Compartment());
+  // 回调和扩展通过引用与隔舱更新，不因差异重算销毁编辑器或丢失搜索、选区。
+  const extra = useRef(extensions);
+  const ready = useRef(onReady);
+  const updated = useRef(onUpdate);
+  extra.current = extensions;
+  ready.current = onReady;
+  updated.current = onUpdate;
   const { theme } = useTheme();
   const dark = theme === "dark";
   // 只计算当前输入对应的差异；加载或失败时保持原文可编辑，不沿用旧结果。
@@ -50,54 +59,30 @@ export function CodeEditor({ value, kind, onChange, readOnly = false, label = "�
       doc: initialValue.current,
       parent: host.current,
       extensions: [
-        basicSetup,
+        editorSetup(kind, dark),
         inlineDiffField,
-        // 沿用 basicSetup 的搜索快捷键与选区高亮，仅补充字面量搜索和中文界面。
-        editorSearch,
-        kind === "claude" ? json() : StreamLanguage.define(toml),
+        extraCompartment.current.of(extra.current),
         readOnlyCompartment.current.of([
           EditorView.editable.of(!readOnly),
           EditorState.readOnly.of(readOnly),
         ]),
-        EditorView.contentAttributes.of({ "aria-label": label }),
-        EditorView.lineWrapping,
+        // 只读原文同样可聚焦，确保双栏左侧能使用 Ctrl+F，而不会开放正文修改。
+        EditorView.contentAttributes.of({ "aria-label": label, tabindex: "0" }),
         EditorView.updateListener.of((update) => {
           if (update.docChanged && !syncing.current) callback.current?.(update.state.doc.toString());
+          updated.current?.(update);
         }),
-        // 颜色全部引用 CSS 变量，随 html[data-theme] 自动切换；dark 标志
-        // 决定 CodeMirror 内建补全/选区等 UI 的明暗基准，因此主题切换时重建编辑器。
-        EditorView.theme({
-          "&": { height: "100%", fontSize: "13px", backgroundColor: "var(--bg-page)", color: "var(--text)" },
-          ".cm-scroller": { overflow: "auto", fontFamily: "Consolas, 'Cascadia Code', monospace" },
-          ".cm-content": { padding: "16px 0", minHeight: "240px" },
-          ".cm-gutters": { backgroundColor: "var(--bg-rail)", color: "var(--muted)", border: "none" },
-          ".cm-activeLine": { backgroundColor: "var(--accent-bg)" },
-          ".cm-activeLineGutter": { backgroundColor: "var(--bg-column)" },
-          "&.cm-focused": { outline: "none" },
-          ".cm-cursor": { borderLeftColor: "var(--accent)" },
-          ".cm-selectionBackground, &.cm-focused .cm-selectionBackground": { backgroundColor: "var(--border-control-hover) !important" },
-          // 搜索面板随主题变量取色，避免浅色主题下出现刺眼白底。
-          ".cm-panels": { backgroundColor: "var(--bg-column)", color: "var(--text)", borderBottom: "1px solid var(--line)" },
-          // 复用内置搜索面板的两行结构，仅为文本框和操作按钮适配主题，避免污染复选框及关闭按钮。
-          ".cm-panel.cm-search .cm-textfield, .cm-panel.cm-search .cm-button": {
-            background: "var(--bg-input)", color: "var(--text-input)",
-            border: "1px solid var(--border-control)", fontSize: "70%",
-          },
-          ".cm-panel.cm-search .cm-textfield": { borderRadius: "0", padding: ".2em .5em" },
-          ".cm-panel.cm-search .cm-button": { borderRadius: "1px", padding: ".2em 1em" },
-          // 覆盖全局表单标签的纵向 flex 布局，使三个搜索选项紧跟查找按钮横向排列。
-          ".cm-panel.cm-search label": {
-            display: "inline", color: "var(--muted)", fontSize: "80%", whiteSpace: "pre",
-          },
-          ".cm-panel.cm-search input[type=checkbox]": {
-            width: "auto", height: "auto", padding: "0", borderRadius: "0", verticalAlign: "middle",
-          },
-        }, { dark }),
       ],
     });
     view.current = editor;
-    return () => { view.current = null; editor.destroy(); };
+    const notify = ready.current;
+    notify?.(editor);
+    return () => { notify?.(null); view.current = null; editor.destroy(); };
   }, [kind, label, dark]);
+
+  useEffect(() => {
+    view.current?.dispatch({ effects: extraCompartment.current.reconfigure(extensions) });
+  }, [extensions]);
 
   useEffect(() => {
     const editor = view.current;

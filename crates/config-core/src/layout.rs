@@ -2,6 +2,7 @@ use crate::{config_groups, model::*, state};
 
 pub(crate) fn is_change(change: &Change) -> bool {
     matches!(change, Change::ReorderTemplates { .. } | Change::ReorderConfigs { .. }
+        | Change::ReorderConfigGroups { .. }
         | Change::SaveConfigGroup { .. } | Change::DeleteConfigGroup { .. }
         | Change::AssignConfigGroup { .. })
 }
@@ -47,6 +48,21 @@ pub(crate) fn prepare(
             config_groups: config_groups::save(current, id.as_deref(), &name, kind)?,
             ..current.clone()
         },
+        Change::ReorderConfigGroups { kind, order } => {
+            validate_order(&order, current.config_groups.iter()
+                .filter(|group| group.kind == kind).map(|group| group.id.clone()).collect())?;
+            let groups = current.config_groups.iter()
+                .map(|group| (group.id.as_str(), group)).collect::<std::collections::HashMap<_, _>>();
+            let mut ordered = order.iter();
+            // 只替换当前产品的槽位，另一产品的分组及全部成员关系保持原样。
+            let config_groups = current.config_groups.iter().map(|group| {
+                if group.kind != kind { return Ok(group.clone()); }
+                ordered.next().and_then(|id| groups.get(id.as_str()))
+                    .copied().cloned()
+                    .ok_or_else(|| "分组排序清单已变化，请刷新后重试。".to_owned())
+            }).collect::<Result<Vec<_>>>()?;
+            PanelState { config_groups, ..current.clone() }
+        }
         Change::DeleteConfigGroup { id } => PanelState {
             config_groups: config_groups::delete(current, &id)?, ..current.clone()
         },

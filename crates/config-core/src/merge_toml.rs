@@ -111,14 +111,18 @@ fn merge_item(
             let table = result.as_table_like_mut()?;
             merge_table(table, previous.and_then(Item::as_table_like).unwrap_or(&empty),
                 selected.and_then(Item::as_table_like).unwrap_or(&empty), path, overrides, priority);
-            return if table.is_empty() && selected.is_none() { None } else { Some(result) };
+            // 当前优先保留已有空表，通用优先才同步移除已删除的空公共表。
+            return if table.is_empty() && selected.is_none() && priority == MergePriority::Template {
+                None
+            } else { Some(result) };
         }
     }
-    // 通用优先覆盖标量、数组及类型冲突；语义相同时保留当前项的注释与格式。
+    // 公共字段跟随新版及删除；语义相同保留注释与格式，独有子键已在表合并中保留。
     if priority == MergePriority::Template {
         if let Some(selected) = selected {
             return Some(current.filter(|item| item_equal(item, selected)).unwrap_or(selected).clone());
         }
+        if previous.is_some() { return None; }
     }
     if merge_policy::has_protected_children(overrides, path) {
         merge_policy::preserve(overrides, path);
@@ -130,7 +134,8 @@ fn merge_item(
         _ => false,
     };
     if same(current, previous) {
-        return if same(current, selected) { current.cloned() } else { selected.cloned() };
+        // 与 JSON 一致：当前已有值不随旧通用基线更新，仅补充缺少的新字段。
+        return current.or(selected).cloned();
     }
     if previous.is_none() && same(current, selected) { return current.cloned(); }
     merge_policy::preserve(overrides, path);

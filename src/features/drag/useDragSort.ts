@@ -1,14 +1,16 @@
-import { useEffect, useRef, useState } from "react";
-import type { DragEvent, MouseEvent } from "react";
+import { useEffect, useId, useRef, useState } from "react";
+import type { DragEvent, MouseEvent, PointerEvent } from "react";
+import { startDragAutoScroll, type DragPointer } from "./dragAutoScroll";
+import { startPointerDrag } from "./pointerDrag";
 
-// 轻量列表拖拽排序：仅依赖原生 HTML5 Drag & Drop，不引入第三方库。
+// 轻量列表拖拽排序：共用 Pointer Events 手势，不引入第三方库。
 // 交互模型：
 //   拖动中 → 预览顺序（preview）即时重排，其他卡片通过 CSS transform 平滑让位；
 //   落手   → 冻结预览顺序（frozen，乐观更新）并静默提交，杜绝"弹回旧序再跳新序"的闪烁与延迟感；
 //   成功   → 提交返回的 items 顺序对齐后自动解冻；
 //   失败   → 由调用方调用 cancel() 立即回弹到状态库权威顺序。
 // 所有关键跨事件状态（dragging/over）一律以 ref 为准，state 只做渲染镜像：
-//   drop/dragover 是异步事件序列，卡片重渲染随时可能清空 state，ref 保证提交不丢失。
+//   指针、滚轮与滚动是独立事件序列，ref 保证卡片重渲染后提交不丢失。
 export function useDragSort<T>(
   items: T[],
   keyOf: (item: T) => string,
@@ -17,21 +19,29 @@ export function useDragSort<T>(
 ) {
   const [render, setRender] = useState<{ dragging: string | null; over: string | null }>({ dragging: null, over: null });
   const [frozen, setFrozen] = useState<string[] | null>(null);
-  // 状态镜像：事件处理器内部一律读取 ref，避免 state 闭包过期。
-  const renderRef = useRef(render);
-  renderRef.current = render;
-  // 拦截卡片 drop 冒泡到容器后造成的重复提交；drop 闭包也可能跨渲染存活。
+  // 每个嵌套列表独占命中范围，不将组内卡片的手势识别为整组拖拽。
+  const scope = useId();
+  const listRef = useRef<HTMLElement | null>(null);
+  const gestureRef = useRef<(() => void) | null>(null);
+  // 松手仅提交一次，事件闭包也可能跨渲染存活。
   const doneRef = useRef(true);
-  // drop 后抑制源元素 click：防止松手瞬间误触打开编辑器/导航打断乐观冻结。
-  const suppressClickRef = useRef(false);
-  // 最近一次拖拽的键用 ref 保存：dragend 时 state 可能已被 drop 清空。
+  // 状态镜像：事件处理器内部读取 ref，避免旧闭包覆盖最近一次悬停。
   const latestRef = useRef<{ dragging: string | null; over: string | null }>({ dragging: null, over: null });
+  const autoScrollRef = useRef<ReturnType<typeof startDragAutoScroll>>(null);
 
   const keys = items.map(keyOf);
   const joined = keys.join("\u0000");
 
   // 状态库权威顺序一旦变化（提交成功对齐 / 任何外部刷新），一律解除乐观冻结。
-  useEffect(() => { setFrozen(null); }, [joined]);
+  useEffect(() => {
+    setFrozen(null);
+    if (gestureRef.current) reset();
+  }, [joined]);
+  // 禁用或卸载时释放拖拽监听与动画帧，避免残留滚动影响后续操作。
+  useEffect(() => {
+    if (!enabled && gestureRef.current) reset();
+    return disposeGesture;
+  }, [enabled]);
 
   // 拖拽预览：以当前列表为基准，把被拖项移动到最后悬停项的位置。
   // preview 只在渲染期间从 state 镜像推导；事件写入走 ref，再由 setRender 触发重渲染。
@@ -55,13 +65,20 @@ export function useDragSort<T>(
 
   function sync(next: { dragging: string | null; over: string | null }) {
     latestRef.current = next;
-    renderRef.current = next;
     setRender(next);
   }
 
   function reset() {
+    disposeGesture();
     doneRef.current = true;
     sync({ dragging: null, over: null });
+  }
+
+  function disposeGesture() {
+    gestureRef.current?.();
+    gestureRef.current = null;
+    autoScrollRef.current?.stop();
+    autoScrollRef.current = null;
   }
 
   function cancel() {
@@ -70,15 +87,11 @@ export function useDragSort<T>(
     reset();
   }
 
-  function drop(event: DragEvent) {
+  function drop(point: DragPointer) {
+    if (!targetInList(point)) { reset(); return; }
+    hover(point);
     const current = latestRef.current;
     if (!current.dragging) return;
-    event.preventDefault();
-    // 阻断后续 click 派发：HTML5 DnD 规范里 drop 后浏览器仍可能对源元素派发
-    // click（尤其零位移/短位移场景）。不拦的话配置卡片会打开编辑器并触发 busy，
-    // 干扰乐观冻结状态；模板卡片则会被导航打断。全局 snap 标记由 click 消费。
-    suppressClickRef.current = true;
-    setTimeout(() => { suppressClickRef.current = false; }, 0);
     if (doneRef.current) return;
     doneRef.current = true;
     const overKey = current.over ?? current.dragging;
@@ -102,49 +115,81 @@ export function useDragSort<T>(
     return {
       // 有未落盘的乐观顺序时暂停新一轮拖拽，避免并发提交触发 revision 冲突。
       draggable: enabled && !frozen,
+      "data-drag-sort-scope": scope,
+      "data-drag-sort-key": key,
+      onPointerDown: (event: PointerEvent) => {
+        if (event.defaultPrevented || !enabled || frozen || event.button !== 0
+          || !event.isPrimary || event.pointerType !== "mouse" || !keys.includes(key)) return;
+        const source = event.currentTarget as HTMLElement;
+        // 只接受最近的排序卡片，交互控件与内层卡片不启动外层手势。
+        if (!(event.target instanceof Element)
+          || event.target.closest("[data-drag-sort-key]") !== source) return;
+        const control = event.target.closest("button, input, select, textarea, a, label");
+        if (control && control !== source) return;
+        event.stopPropagation();
+        disposeGesture();
+        gestureRef.current = startPointerDrag(source, event.nativeEvent, {
+          start: (point) => {
+            doneRef.current = false;
+            sync({ dragging: key, over: null });
+            autoScrollRef.current = startDragAutoScroll(source, point, hover);
+          },
+          move: (point) => { hover(point); autoScrollRef.current?.move(point); },
+          drop,
+          cancel: reset,
+        });
+      },
       onClick: (event: MouseEvent) => {
-        // 拖拽手势结束后的 click 是浏览器派发的噪声事件，统一吞掉；
-        // 业务 onClick 必须经由本包装调用（JSX 里展开顺序会覆盖同名属性）。
-        if (suppressClickRef.current) { event.preventDefault(); return; }
+        // 手势层统一拦截拖拽后的 click；正常点击继续通过原有业务入口。
+        if (event.defaultPrevented) {
+          event.preventDefault(); event.stopPropagation(); return;
+        }
         onClick?.(event);
       },
       onDragStart: (event: DragEvent) => {
-        event.dataTransfer.effectAllowed = "move";
-        // Chromium 在没有 setData 时不会真正启动拖拽动作。
-        event.dataTransfer.setData("text/plain", key);
-        doneRef.current = false;
-        sync({ dragging: key, over: null });
-      },
-      onDragOver: (event: DragEvent) => {
-        const current = renderRef.current;
-        if (!current.dragging || key === current.dragging) return;
+        // 属性仅保留既有样式条件，禁止进入会屏蔽滚轮的原生 DnD。
         event.preventDefault();
-        event.dataTransfer.dropEffect = "move";
-        if (current.over !== key) sync({ ...current, over: key });
+        event.stopPropagation();
       },
-      onDrop: drop,
-      onDragEnd: reset,
     };
   }
 
-  function containerDragOver(event: DragEvent) {
-    const current = renderRef.current;
-    if (!current.dragging) return;
-    event.preventDefault();
-    // 边缘放置支持：光标在列表几何范围的首/尾区间时，直接锚定到边界卡片，
-    // 使"拖到最前 / 最后"成为合法落点（中间区间由卡片级 dragOver 覆盖）。
-    const list = event.currentTarget as HTMLElement;
+  function targetInList(point: DragPointer) {
+    const list = listRef.current;
+    if (!list) return null;
+    // 实际命中必须位于本列表内，避免长分组越过滚动区后误把固定标题当成落点。
+    const target = list.ownerDocument.elementFromPoint(point.x, point.y);
+    return target && list.contains(target) ? target : null;
+  }
+
+  function hover(point: DragPointer) {
+    const current = latestRef.current;
+    const list = listRef.current;
+    const target = targetInList(point);
+    if (!current.dragging || !list || !target) return;
+    const hit = target.closest(`[data-drag-sort-scope="${scope}"]`)?.getAttribute("data-drag-sort-key");
+    if (hit && keys.includes(hit)) {
+      if (hit !== current.dragging && current.over !== hit) sync({ ...current, over: hit });
+      return;
+    }
+    // 空白首尾落点只在真实边界生效，滚动过程中不会跳到未显示的首尾卡片。
     const rect = list.getBoundingClientRect();
-    const ratio = (event.clientY - rect.top) / Math.max(rect.height, 1);
+    const ratio = (point.y - rect.top) / Math.max(rect.height, 1);
     if (!keys.length) return;
-    if (ratio < 0.12) { if (current.over !== keys[0]) sync({ ...current, over: keys[0] }); return; }
-    if (ratio > 0.88) { if (current.over !== keys[keys.length - 1]) sync({ ...current, over: keys[keys.length - 1] }); return; }
+    // 可视区边缘用于自动滚动，只有滚动已到真实首尾时才锚定列表首尾项。
+    if (ratio < 0.12 && list.scrollTop <= 0) {
+      if (current.over !== keys[0]) sync({ ...current, over: keys[0] });
+      return;
+    }
+    if (ratio > 0.88 && list.scrollTop + list.clientHeight >= list.scrollHeight - 1) {
+      if (current.over !== keys[keys.length - 1]) sync({ ...current, over: keys[keys.length - 1] });
+      return;
+    }
     // 中部空隙：维持最后悬停的卡片不做跳变。
   }
 
   const container = {
-    onDragOver: containerDragOver,
-    onDrop: drop,
+    ref: (element: HTMLElement | null) => { listRef.current = element; },
   };
 
   return { dragging, over, ordered, card, container, cancel };

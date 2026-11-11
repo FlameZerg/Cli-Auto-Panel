@@ -14,7 +14,7 @@ pub fn validate(kind: Kind, content: &str) -> Result<()> {
     Ok(())
 }
 
-// 解绑直接保留原文；预览、保存及同步统一按绑定优先级处理三方合并。
+// 解绑直接保留原文；预览与别名保存采用草稿优先级，通用更新采用每份绑定已保存的优先级。
 pub fn merge_config(
     kind: Kind, content: &str, binding: Option<&Binding>, selected_content: Option<&str>,
     priority: MergePriority,
@@ -143,16 +143,8 @@ fn save_template(
         .filter(|b| b.template_id == template_id).cloned().collect();
     let mut updates = std::collections::HashMap::new();
     for binding in bindings {
-        // 每次模板保存都同步全部绑定，不再存在模板已更新但引用仍停留旧版的保存入口。
-        // 通用优先即使模板正文未变也重新核对文件，确保外部修改的冲突值服从所选策略。
-        if binding.applied_content == content && binding.merge_priority == MergePriority::Current {
-            // 内容回退至已应用版本时，只更新绑定版本号，避免误报待同步或无意义重写文件。
-            if binding.applied_revision != next.revision {
-                updates.insert(binding.config_id.clone(),
-                    Binding { applied_revision: next.revision, ..binding });
-            }
-            continue;
-        }
+        // 绑定决定是否参与同步，优先级决定同名字段取值，不能强制覆盖用户的当前配置优先选择。
+        // 正文未变也核对文件，通用优先可恢复公共值，当前优先保留本地值；独有字段继续保留。
         let entry = config(inventory, &binding.config_id)?;
         if let Some(error) = &entry.error { return Err(error.clone()); }
         let path = discovery::managed_path(paths, Path::new(&entry.path), kind)?;
@@ -339,6 +331,7 @@ pub fn prepare(
             restore(&mut plan, backup)?;
         }
         Change::ReorderTemplates { .. } | Change::ReorderConfigs { .. }
+        | Change::ReorderConfigGroups { .. }
         | Change::SaveConfigGroup { .. } | Change::DeleteConfigGroup { .. }
         | Change::AssignConfigGroup { .. } => return Err("布局操作必须使用轻量保存入口。".into()),
     }
