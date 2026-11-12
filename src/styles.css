@@ -27,6 +27,9 @@
   --tag-border: #3b3555; --tag-bg: #242034; --tag-text: #bfb1ee;
   --binding-border: #3d3659; --binding-bg: #211f302f;
   --editor-border: #2d3748;
+  /* 深色代码使用较亮前景；键、字符串、数值和原子值分别保持蓝、绿、橙、紫的语义。 */
+  --code-property: #8cc8ff; --code-string: #a5d6a7; --code-number: #f2c078; --code-literal: #c4b5fd;
+  --code-comment: #96a4b8; --code-punctuation: #b8c5d6; --code-invalid: #ff9aa8;
   --path-text: #7d8ca6;
   --notice-bg: #302a182b; --notice-border: #51432c; --notice-text: #cbb99b;
   --error-border: #69343f; --error-bg: #40202966; --error-text: #f1b3bc;

@@ -4,6 +4,7 @@ import { Compartment, EditorState, type Extension } from "@codemirror/state";
 import { useTheme } from "../theme";
 import { InlineNotice } from "./InlineNotice";
 import { editorSetup, type EditorLanguage } from "./editorSetup";
+import { editorTheme } from "./editorTheme";
 import { buildLineDiff } from "../features/preview/lineDiff";
 import { createInlineDiffDecorations, inlineDiffField, setInlineDiff } from "../features/preview/inlineDiff";
 
@@ -34,6 +35,7 @@ export function CodeEditor({ value, kind, onChange, readOnly = false, label = "�
   const syncing = useRef(false);
   const readOnlyCompartment = useRef(new Compartment());
   const extraCompartment = useRef(new Compartment());
+  const themeCompartment = useRef(new Compartment());
   // 回调和扩展通过引用与隔舱更新，不因差异重算销毁编辑器或丢失搜索、选区。
   const extra = useRef(extensions);
   const ready = useRef(onReady);
@@ -43,6 +45,9 @@ export function CodeEditor({ value, kind, onChange, readOnly = false, label = "�
   updated.current = onUpdate;
   const { theme } = useTheme();
   const dark = theme === "dark";
+  // 创建时读取最新主题，主题变化本身不再触发编辑器销毁。
+  const initialDark = useRef(dark);
+  initialDark.current = dark;
   // 只计算当前输入对应的差异；加载或失败时保持原文可编辑，不沿用旧结果。
   const result = useMemo(() => {
     if (!diff || diff.loading || diff.error || diff.after === null) return { lines: null, error: "" };
@@ -59,7 +64,8 @@ export function CodeEditor({ value, kind, onChange, readOnly = false, label = "�
       doc: initialValue.current,
       parent: host.current,
       extensions: [
-        editorSetup(kind, dark),
+        editorSetup(kind),
+        themeCompartment.current.of(editorTheme(initialDark.current)),
         inlineDiffField,
         extraCompartment.current.of(extra.current),
         readOnlyCompartment.current.of([
@@ -78,7 +84,12 @@ export function CodeEditor({ value, kind, onChange, readOnly = false, label = "�
     const notify = ready.current;
     notify?.(editor);
     return () => { notify?.(null); view.current = null; editor.destroy(); };
-  }, [kind, label, dark]);
+  }, [kind, label]);
+
+  useEffect(() => {
+    // 只替换主题扩展，保留正文、撤销历史、选区、滚动位置及查找面板。
+    view.current?.dispatch({ effects: themeCompartment.current.reconfigure(editorTheme(dark)) });
+  }, [dark, kind, label]);
 
   useEffect(() => {
     view.current?.dispatch({ effects: extraCompartment.current.reconfigure(extensions) });
