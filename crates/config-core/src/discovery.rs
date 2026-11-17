@@ -45,8 +45,11 @@ pub fn inventory(paths: &Paths, ast: &AstResult, state: &PanelState) -> Inventor
     let mut sources: Vec<(String, String, Kind)> = ast.aliases.iter()
         .map(|a| (a.name.clone(), a.path.clone(), a.kind)).collect();
     sources.extend(state.imports.iter().map(|i| (String::new(), i.path.clone(), i.kind)));
+    // 只在本轮扫描内复用同路径、同产品的校验结果；下次读取与提交仍重新核验真实路径。
+    let mut resolved_sources: BTreeMap<(String, bool), Result<PathBuf>> = BTreeMap::new();
     for (name, source_path, kind) in sources {
-        let result = managed_path(paths, Path::new(&source_path), kind);
+        let result = resolved_sources.entry((source_path.clone(), kind == Kind::Codex))
+            .or_insert_with(|| managed_path(paths, Path::new(&source_path), kind)).clone();
         let (path, error) = match result {
             Ok(path) => (path, None),
             Err(error) => (PathBuf::from(&source_path), Some(error)),

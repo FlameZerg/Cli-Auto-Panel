@@ -94,7 +94,7 @@ fn save_config(
     let mut change = files::capture(&path, None)?;
     let raw = files::unpack(change.before.as_deref().ok_or("配置源文件不存在。")?)?;
     if files::hash(&raw) != expected_hash {
-        return Err("配置在打开编辑器后被外部修改，请重新载入后合并你的改动。".into());
+        return Err("配置在打开编辑器后被外部修改，请先保留未保存的内容，再刷新清单并打开配置合并你的改动。".into());
     }
     let old = plan.before_state.bindings.iter().find(|b| b.config_id == id);
     let selected = template_id.map(|id| template(&plan.after_state, id, entry.kind).cloned()).transpose()?;
@@ -152,7 +152,7 @@ fn save_template(
         let raw = files::unpack(change.before.as_deref().ok_or("绑定文件不存在。")?)?;
         // 手动编辑不是同步错误；只阻止本轮扫描到捕获之间的新改动，提交阶段继续校验守卫。
         if entry.hash.as_deref() != Some(files::hash(&raw).as_str()) {
-            return Err("准备同步时绑定文件再次发生外部改动，请重新载入。".into());
+            return Err("准备同步时绑定文件再次发生外部改动，请刷新清单后重试。".into());
         }
         let original = Text::decode(&raw, false)?;
         let (output, overrides) = merge_config(kind, &original.value, Some(&binding), Some(&content),
@@ -256,7 +256,7 @@ pub fn prepare(
     } else {
         let (profile, bytes, identity) = crate::profile_editor::read(&paths.profile)?;
         if files::hash(&bytes) != profile_hash {
-            return Err("准备过程中 profile 已变化，请重新载入。".into());
+            return Err("准备过程中 profile 已变化，请刷新清单后重试。".into());
         }
         let encoded = files::pack(&bytes);
         (profile.value, vec![FileChange {

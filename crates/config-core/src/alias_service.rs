@@ -83,7 +83,7 @@ pub fn delete_config(
     let change = files::capture(&path, None)?;
     let before = change.before.as_deref().ok_or("配置文件已经不存在。")?;
     if files::hash(&files::unpack(before)?) != expected_hash {
-        return Err("配置已被外部修改，先重新载入再决定是否删除。".into());
+        return Err("配置已被外部修改，请刷新清单并打开配置后再决定是否删除。".into());
     }
     let aliases = references(paths, ast, entry)?;
     // 即使是手工导入文件，也不在存在未知动态引用时贸然删除。

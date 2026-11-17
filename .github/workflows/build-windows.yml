@@ -1,7 +1,8 @@
-name: 手动构建 Windows EXE
+name: 构建 Windows EXE
 
-# 仅由用户点击触发；提交代码不会自动编译或启动应用。
+# 推送后自动在云端构建，保留手动入口；不启动生成的应用。
 on:
+  push:
   workflow_dispatch:
 
 permissions:
@@ -26,7 +27,8 @@ jobs:
     env:
       RUSTUP_TOOLCHAIN: stable-x86_64-pc-windows-msvc
       CARGO_TERM_COLOR: always
-      BUILD_ARTIFACT_NAME: cli-auto-panel-windows-x64
+      # 外层交付包使用连字符，包内主程序保留带空格的原名。
+      BUILD_ARTIFACT_NAME: Cli-Auto-Panel.zip
 
     steps:
       # 固定已核对的提交，避免可移动版本标签导致构建步骤被静默替换。
@@ -55,15 +57,34 @@ jobs:
       - name: 安装锁定的前端依赖
         run: npm ci
 
+      - name: 检查 ZIP 交付流程
+        run: node --test tests/workflow.test.mjs
+
       - name: 构建 EXE，不生成安装包或启动程序
         run: npm run build -- --no-bundle
 
-      - name: 整理可下载文件
+      - name: 打包并校验交付 ZIP
         run: |
+          Set-StrictMode -Version Latest
+          $ErrorActionPreference = "Stop"
+          $executable = Get-Item -LiteralPath 'src-tauri/target/release/Cli Auto Panel.exe'
+          if ($executable.PSIsContainer -or $executable.Length -eq 0) { throw '主程序不是有效的非空文件' }
           New-Item -ItemType Directory -Path artifacts -Force | Out-Null
-          Copy-Item -LiteralPath src-tauri/target/release/cli-auto-panel.exe -Destination artifacts/cli-auto-panel.exe -ErrorAction Stop
+          $archivePath = Join-Path artifacts $env:BUILD_ARTIFACT_NAME
+          # 外层 ZIP 使用固定连字符名称，包内 EXE 保留原名，不随产物名改写。
+          Compress-Archive -LiteralPath $executable.FullName -DestinationPath $archivePath -CompressionLevel Optimal -Force
+          $archive = [System.IO.Compression.ZipFile]::OpenRead((Resolve-Path -LiteralPath $archivePath).Path)
+          try {
+            if ($archive.Entries.Count -ne 1 -or
+                $archive.Entries[0].FullName -cne $executable.Name -or
+                $archive.Entries[0].Length -ne $executable.Length) {
+              throw 'ZIP 校验失败：根目录必须仅包含原名主程序，且大小与源文件一致'
+            }
+          } finally {
+            $archive.Dispose()
+          }
 
-      # 新 EXE 已准备好才清理旧包；在上传前释放空间，避免旧包占满额度导致上传失败。
+      # 新 ZIP 已校验才清理旧包；在上传前释放空间，避免旧包占满额度导致上传失败。
       - name: 清理本工作流的同名旧产物
         timeout-minutes: 5
         env:
@@ -119,13 +140,14 @@ jobs:
           }
           Write-Host "旧产物清理完成，共处理 $($artifactIds.Count) 份。"
 
-      - name: 上传 EXE
+      - name: 上传交付 ZIP
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ${{ env.BUILD_ARTIFACT_NAME }}
-          path: artifacts/
+          path: artifacts/${{ env.BUILD_ARTIFACT_NAME }}
+          # ZIP 已自行打包并校验，直接上传，避免下载得到 ZIP 套 ZIP。
+          archive: false
           if-no-files-found: error
           # 同一运行重试时替换旧附件；跨运行旧包由上方定向清理步骤处理。
           overwrite: true
           retention-days: 1
-          compression-level: 1

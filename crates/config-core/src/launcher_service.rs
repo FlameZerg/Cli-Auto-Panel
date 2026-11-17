@@ -16,7 +16,7 @@ pub fn set_launcher(
     let captured = files::capture(&path, None)?;
     let before = captured.before.as_deref().ok_or("配置源文件不存在。")?;
     if files::hash(&files::unpack(before)?) != expected_hash {
-        return Err("配置已被外部修改，请重新载入后切换启动版本。".into());
+        return Err("配置已被外部修改，请刷新清单并打开配置后切换启动版本。".into());
     }
     let aliases = alias_service::references(paths, ast, entry)?;
     let suffixes = if aliases.is_empty() {

@@ -1,5 +1,6 @@
 import { useDragSort } from "../drag/useDragSort";
 import type { Bootstrap, ConfigEntry, ConfigGroup, ConfigGroupChange } from "../../types";
+import { useI18n } from "../../theme";
 
 // 每组独立处理拖拽，只替换当前组在全量顺序中的槽位，不产生跨组隐式移动。
 export function ConfigGroupSection({ group, configs, allConfigs, groups, data, selected,
@@ -13,6 +14,7 @@ export function ConfigGroupSection({ group, configs, allConfigs, groups, data, s
   onReorder: (order: string[], cancel: () => void) => void;
   onRename: () => void; onDelete: () => void;
 }) {
+  const { t } = useI18n();
   const drag = useDragSort(configs, (config) => config.id, !disabled && !searching, (order) => {
     const members = new Set(order);
     // 后端仍接收当前产品的完整排列；其他组和未分组的相对位置保持不变。
@@ -20,16 +22,16 @@ export function ConfigGroupSection({ group, configs, allConfigs, groups, data, s
     const replacements = new Map(slots.map((id, index) => [id, order[index]]));
     onReorder(allConfigs.map((config) => replacements.get(config.id) ?? config.id), drag.cancel);
   });
-  const title = group?.name ?? "未分组";
+  const title = group?.name ?? t("未分组");
 
   return <section {...groupCard} onClickCapture={groupCard?.onClick}
     className={`config-group ${groupDragging ? "dragging" : ""} ${groupOver ? "drag-over" : ""}`}
-    aria-label={`${title}分组`}>
+    aria-label={t("{name}分组", { name: title })}>
     <header className="config-group-heading">
       <h3 title={title}>{title}<span>{configs.length}</span></h3>
       {group && <div className="config-group-actions">
-        <button className="quiet" disabled={disabled} aria-label={`重命名分组 ${title}`} onClick={onRename}>改名</button>
-        <button className="quiet" disabled={disabled} aria-label={`删除分组 ${title}`} onClick={onDelete}>删除</button>
+        <button className="quiet" disabled={disabled} aria-label={t("重命名分组 {name}", { name: title })} onClick={onRename}>{t("改名")}</button>
+        <button className="quiet" disabled={disabled} aria-label={t("删除分组 {name}", { name: title })} onClick={onDelete}>{t("删除")}</button>
       </div>}
     </header>
     <div className="config-group-items" {...drag.container}>
@@ -37,9 +39,9 @@ export function ConfigGroupSection({ group, configs, allConfigs, groups, data, s
         groups={groups} groupId={group?.id ?? ""} disabled={disabled} selected={selected === config.id}
         dragging={drag.dragging === config.id} over={drag.over === config.id}
         card={drag.card(config.id, () => onSelect(config))} onAssign={onAssign} />)}
-      {!configs.length && <p className="config-group-empty">{group
+      {!configs.length && <p className="config-group-empty">{t(group
         ? "暂无配置，可通过卡片下方的选择框移入。"
-        : "暂无未分组配置。新建或导入的配置默认放在这里。"}</p>}
+        : "暂无未分组配置。新建或导入的配置默认放在这里。")}</p>}
     </div>
   </section>;
 }
@@ -50,6 +52,7 @@ function ConfigCard({ config, data, groups, groupId, disabled, selected, draggin
   card: ReturnType<ReturnType<typeof useDragSort<ConfigEntry>>["card"]>;
   onAssign: (change: ConfigGroupChange) => void;
 }) {
+  const { t } = useI18n();
   const binding = data.state.bindings.find((item) => item.configId === config.id);
   const template = data.state.templates.find((item) => item.id === binding?.templateId);
   // 正常状态仅显示已同步或未同步；历史覆盖记录不作为额外的警告状态。
@@ -59,24 +62,24 @@ function ConfigCard({ config, data, groups, groupId, disabled, selected, draggin
     : "未同步";
   // 无绑定是正常选择；只有读取错误、外部变化或已绑定但未同步时保留警告。
   const warning = config.error || health === "外部已修改" || (!!binding && health === "未同步");
-  const label = config.aliases.join(" / ") || config.path.split(/[\\/]/).pop() || "手动导入";
+  const label = config.aliases.join(" / ") || config.path.split(/[\\/]/).pop() || t("手动导入");
 
   return <div className={`config-card-shell ${selected ? "selected" : ""}`}>
     <button disabled={disabled} {...card}
       className={`config-card ${dragging ? "dragging" : ""} ${over ? "drag-over" : ""} ${selected ? "selected" : ""}`}>
-      <div className="card-label"><strong>{config.aliases.join(" / ") || "手动导入"}</strong>
+      <div className="card-label"><strong>{config.aliases.join(" / ") || t("手动导入")}</strong>
         <span className={`status ${warning ? "warning" : binding ? "synced" : ""}`}
-          title={config.error || health}>{health}</span></div>
+          title={config.error || t(health)}>{t(health)}</span></div>
       <span className="card-path" title={config.path}>{config.path.split(/[\\/]/).pop()}</span>
-      <span className="card-template">{template ? template.name : "保留原配置，可手动选择模板"}</span>
+      <span className="card-template">{template ? template.name : t("保留原配置，可手动选择模板")}</span>
     </button>
     {/* 归组控件置于卡片按钮之外，避免嵌套交互元素及选择分组时误打开编辑器。 */}
-    <label className="config-group-select">分组
-      <select value={groupId} disabled={disabled} aria-label={`设置 ${label} 的分组`}
+    <label className="config-group-select">{t("分组")}
+      <select value={groupId} disabled={disabled} aria-label={t("设置 {name} 的分组", { name: label })}
         onChange={(event) => onAssign({
           type: "assignConfigGroup", configId: config.id, groupId: event.target.value || null,
         })}>
-        <option value="">未分组</option>
+        <option value="">{t("未分组")}</option>
         {groups.map((group) => <option key={group.id} value={group.id}>{group.name}</option>)}
       </select>
     </label>

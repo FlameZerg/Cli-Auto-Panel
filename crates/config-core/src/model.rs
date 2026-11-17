@@ -313,9 +313,3 @@ pub struct Document {
     pub hash: String,
     pub notices: Vec<String>,
 }
-
-#[derive(Serialize)]
-pub struct Extraction {
-    pub content: String,
-    pub excluded: Vec<String>,
-}

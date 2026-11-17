@@ -177,7 +177,7 @@ pub fn verify(change: &FileChange) -> Result<()> {
     if current.as_ref().map(|(b, _)| pack(b)) != change.before
         || current.as_ref().map(|(_, identity)| identity.clone()) != change.before_identity
     {
-        return Err(format!("文件在生成操作计划后被外部修改或替换，请重新载入：{}", change.path.display()));
+        return Err(format!("文件在生成操作计划后被外部修改或替换，请刷新清单后重试：{}", change.path.display()));
     }
     Ok(())
 }

@@ -30,11 +30,6 @@ async fn read_config(app: tauri::AppHandle, id: String) -> std::result::Result<D
 }
 
 #[tauri::command]
-async fn extract_common(app: tauri::AppHandle, kind: Kind, content: String) -> std::result::Result<Extraction, String> {
-    access(app, move |engine| engine.extract(kind, &content)).await
-}
-
-#[tauri::command]
 async fn preview_merge(
     app: tauri::AppHandle, kind: Kind, content: String, template: Option<String>, config_id: Option<String>,
     merge_priority: MergePriority,
@@ -77,7 +72,7 @@ fn main() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            bootstrap, read_config, extract_common, preview_merge, prepare_change,
+            bootstrap, read_config, preview_merge, prepare_change,
             update_layout, commit_change, recover_pending
         ])
         .build(tauri::generate_context!());
