@@ -7,6 +7,7 @@ import { editorSetup, type EditorLanguage } from "./editorSetup";
 import { editorTheme } from "./editorTheme";
 import { buildLineDiff } from "../features/preview/lineDiff";
 import { createInlineDiffDecorations, inlineDiffField, setInlineDiff } from "../features/preview/inlineDiff";
+import { refreshSearchLanguage, searchPhrases } from "./editorSearch";
 
 const noExtensions: Extension = [];
 
@@ -26,7 +27,7 @@ interface Props {
   };
 }
 
-export function CodeEditor({ value, kind, onChange, readOnly = false, label = "配置编辑器",
+export function CodeEditor({ value, kind, onChange, readOnly = false, label,
   extensions = noExtensions, onReady, onUpdate, diff }: Props) {
   const host = useRef<HTMLDivElement>(null);
   const view = useRef<EditorView | null>(null);
@@ -36,6 +37,7 @@ export function CodeEditor({ value, kind, onChange, readOnly = false, label = "�
   const readOnlyCompartment = useRef(new Compartment());
   const extraCompartment = useRef(new Compartment());
   const themeCompartment = useRef(new Compartment());
+  const languageCompartment = useRef(new Compartment());
   // 回调和扩展通过引用与隔舱更新，不因差异重算销毁编辑器或丢失搜索、选区。
   const extra = useRef(extensions);
   const ready = useRef(onReady);
@@ -43,7 +45,15 @@ export function CodeEditor({ value, kind, onChange, readOnly = false, label = "�
   extra.current = extensions;
   ready.current = onReady;
   updated.current = onUpdate;
-  const { theme } = useTheme();
+  const { theme, language, t } = useTheme();
+  const editorLabel = label ?? t("配置编辑器");
+  const languageExtension = [
+    EditorState.phrases.of(language === "zh" ? searchPhrases : {}),
+    EditorView.contentAttributes.of({ "aria-label": editorLabel, tabindex: "0" }),
+  ];
+  const initialLanguage = useRef(languageExtension);
+  const previousLanguage = useRef(language);
+  initialLanguage.current = languageExtension;
   const dark = theme === "dark";
   // 创建时读取最新主题，主题变化本身不再触发编辑器销毁。
   const initialDark = useRef(dark);
@@ -73,7 +83,7 @@ export function CodeEditor({ value, kind, onChange, readOnly = false, label = "�
           EditorState.readOnly.of(readOnly),
         ]),
         // 只读原文同样可聚焦，确保双栏左侧能使用 Ctrl+F，而不会开放正文修改。
-        EditorView.contentAttributes.of({ "aria-label": label, tabindex: "0" }),
+        languageCompartment.current.of(initialLanguage.current),
         EditorView.updateListener.of((update) => {
           if (update.docChanged && !syncing.current) callback.current?.(update.state.doc.toString());
           updated.current?.(update);
@@ -84,16 +94,28 @@ export function CodeEditor({ value, kind, onChange, readOnly = false, label = "�
     const notify = ready.current;
     notify?.(editor);
     return () => { notify?.(null); view.current = null; editor.destroy(); };
-  }, [kind, label]);
+  }, [kind]);
+
+  useEffect(() => {
+    // 语言与可访问名称走隔舱更新，不因翻译变化销毁撤销历史、选区或搜索状态。
+    const editor = view.current;
+    if (!editor) return;
+    editor.dispatch({ effects: languageCompartment.current.reconfigure([
+      EditorState.phrases.of(language === "zh" ? searchPhrases : {}),
+      EditorView.contentAttributes.of({ "aria-label": editorLabel, tabindex: "0" }),
+    ]) });
+    if (previousLanguage.current !== language) refreshSearchLanguage(editor);
+    previousLanguage.current = language;
+  }, [language, editorLabel, kind]);
 
   useEffect(() => {
     // 只替换主题扩展，保留正文、撤销历史、选区、滚动位置及查找面板。
     view.current?.dispatch({ effects: themeCompartment.current.reconfigure(editorTheme(dark)) });
-  }, [dark, kind, label]);
+  }, [dark, kind]);
 
   useEffect(() => {
     view.current?.dispatch({ effects: extraCompartment.current.reconfigure(extensions) });
-  }, [extensions]);
+  }, [extensions, kind]);
 
   useEffect(() => {
     const editor = view.current;
@@ -105,7 +127,7 @@ export function CodeEditor({ value, kind, onChange, readOnly = false, label = "�
         EditorState.readOnly.of(readOnly),
       ]),
     });
-  }, [readOnly]);
+  }, [readOnly, kind]);
 
   useEffect(() => {
     const editor = view.current;
@@ -114,15 +136,15 @@ export function CodeEditor({ value, kind, onChange, readOnly = false, label = "�
       try { editor.dispatch({ changes: { from: 0, to: editor.state.doc.length, insert: value } }); }
       finally { syncing.current = false; }
     }
-  }, [value]);
+  }, [value, kind]);
 
   useEffect(() => {
     const editor = view.current;
     if (!editor) return;
     // 按编辑器规范化后的文本核对基线，兼容 Windows CRLF，且不把预览行写入文档。
     const lines = editor.state.doc.eq(editor.state.toText(value)) ? result.lines : null;
-    editor.dispatch({ effects: setInlineDiff.of(createInlineDiffDecorations(editor.state, lines ?? [])) });
-  }, [value, result.lines, kind, label, dark]);
+    editor.dispatch({ effects: setInlineDiff.of(createInlineDiffDecorations(editor.state, lines ?? [], t)) });
+  }, [value, result.lines, kind, t, dark]);
 
   return <div className="code-editor-shell" aria-busy={diff?.loading}>
     {/* 移除共享配置说明栏，仅在差异运算真实失败时保留错误。 */}

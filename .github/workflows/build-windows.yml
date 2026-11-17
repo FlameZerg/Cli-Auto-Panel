@@ -1,7 +1,8 @@
-name: 手动构建 Windows EXE
+name: 构建 Windows EXE
 
-# 仅由用户点击触发；提交代码不会自动编译或启动应用。
+# 推送后自动在云端构建，保留手动入口；不启动生成的应用。
 on:
+  push:
   workflow_dispatch:
 
 permissions:
@@ -61,7 +62,8 @@ jobs:
       - name: 整理可下载文件
         run: |
           New-Item -ItemType Directory -Path artifacts -Force | Out-Null
-          Copy-Item -LiteralPath src-tauri/target/release/cli-auto-panel.exe -Destination artifacts/cli-auto-panel.exe -ErrorAction Stop
+          # tauri build 依据 mainBinaryName 将产物重命名为带空格的 exe，源头与目标同步使用新名称
+          Copy-Item -LiteralPath "src-tauri/target/release/Cli Auto Panel.exe" -Destination "artifacts/Cli Auto Panel.exe" -ErrorAction Stop
 
       # 新 EXE 已准备好才清理旧包；在上传前释放空间，避免旧包占满额度导致上传失败。
       - name: 清理本工作流的同名旧产物

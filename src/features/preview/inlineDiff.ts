@@ -1,6 +1,7 @@
 import { StateEffect, StateField, type EditorState, type Range } from "@codemirror/state";
 import { Decoration, EditorView, WidgetType, type DecorationSet } from "@codemirror/view";
 import type { DiffLine } from "./lineDiff";
+import type { Translator } from "../../locales";
 
 export const setInlineDiff = StateEffect.define<DecorationSet>();
 
@@ -17,10 +18,10 @@ export const inlineDiffField = StateField.define<DecorationSet>({
 });
 
 class AddedLinesWidget extends WidgetType {
-  constructor(readonly lines: readonly DiffLine[]) { super(); }
+  constructor(readonly lines: readonly DiffLine[], readonly t: Translator) { super(); }
 
   eq(other: AddedLinesWidget) {
-    return this.lines.length === other.lines.length && this.lines.every((line, index) => {
+    return this.t === other.t && this.lines.length === other.lines.length && this.lines.every((line, index) => {
       const next = other.lines[index];
       return line.text === next.text && line.afterLine === next.afterLine && line.noNewline === next.noNewline;
     });
@@ -34,7 +35,7 @@ class AddedLinesWidget extends WidgetType {
       const row = document.createElement("div");
       row.className = "cm-diff-added-line";
       // 无障碍说明放在行上，不再为加号创建占据正文宽度的独立列。
-      row.setAttribute("aria-label", `新增，第 ${line.afterLine} 行`);
+      row.setAttribute("aria-label", this.t("新增，第 {line} 行", { line: line.afterLine ?? "" }));
       const text = document.createElement("span");
       text.className = "cm-diff-added-text";
       // 仅以文本插入配置内容，避免将外部配置解释为 HTML。
@@ -43,7 +44,7 @@ class AddedLinesWidget extends WidgetType {
       if (line.noNewline) {
         const marker = document.createElement("span");
         marker.className = "cm-diff-no-newline";
-        marker.textContent = " ↵（末行无换行）";
+        marker.textContent = this.t(" ↵（末行无换行）");
         row.append(marker);
       }
       block.append(row);
@@ -52,7 +53,7 @@ class AddedLinesWidget extends WidgetType {
   }
 }
 
-export function createInlineDiffDecorations(state: EditorState, lines: readonly DiffLine[]): DecorationSet {
+export function createInlineDiffDecorations(state: EditorState, lines: readonly DiffLine[], t: Translator): DecorationSet {
   const ranges: Range<Decoration>[] = [];
   let nextBeforeLine = 1;
   for (let index = 0; index < lines.length;) {
@@ -64,7 +65,7 @@ export function createInlineDiffDecorations(state: EditorState, lines: readonly 
       const beforeLine = nextBeforeLine <= state.doc.lines;
       const position = beforeLine ? state.doc.line(nextBeforeLine).from : state.doc.length;
       ranges.push(Decoration.widget({
-        widget: new AddedLinesWidget(lines.slice(start, index)), block: true, side: beforeLine ? -1 : 1,
+        widget: new AddedLinesWidget(lines.slice(start, index), t), block: true, side: beforeLine ? -1 : 1,
       }).range(position));
       continue;
     }
@@ -72,7 +73,8 @@ export function createInlineDiffDecorations(state: EditorState, lines: readonly 
       ranges.push(Decoration.line({ attributes: {
         class: "cm-diff-removed-line",
         "data-no-newline": String(line.noNewline),
-        title: `合并后删除的原文${line.noNewline ? "（末行无换行）" : ""}`,
+        "data-newline-label": t(" ↵（末行无换行）"),
+        title: t("合并后删除的原文") + (line.noNewline ? t(" ↵（末行无换行）") : ""),
       } }).range(state.doc.line(nextBeforeLine).from));
     }
     nextBeforeLine += 1;

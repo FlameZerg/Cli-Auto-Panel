@@ -3,6 +3,7 @@ import { ConfigGroupDialog, type GroupAction } from "./ConfigGroupDialog";
 import { ConfigGroupSection } from "./ConfigGroupSection";
 import { useDragSort } from "../drag/useDragSort";
 import type { Bootstrap, ConfigEntry, ConfigGroupChange, Kind } from "../../types";
+import { useI18n } from "../../theme";
 
 // 搜索仅影响展示，不改变归组；完整配置顺序继续交给既有状态库维护。
 export function ConfigGroups({ data, kind, configs, search, selected, disabled, saving, error,
@@ -14,6 +15,7 @@ export function ConfigGroups({ data, kind, configs, search, selected, disabled, 
   onReorder: (order: string[], cancel: () => void) => void;
   onReorderGroups: (order: string[], cancel: () => void) => void;
 }) {
+  const { t } = useI18n();
   const [action, setAction] = useState<GroupAction | null>(null);
   const groups = (data.state.configGroups ?? []).filter((group) => group.kind === kind);
   const membership = new Map(groups.flatMap((group) => group.configIds.map((id) => [id, group.id] as const)));
@@ -31,8 +33,8 @@ export function ConfigGroups({ data, kind, configs, search, selected, disabled, 
 
   return <>
     <div className="config-groups-toolbar">
-      <span>{groups.length} 个分组</span>
-      <button disabled={disabled} onClick={() => setAction({ type: "create" })}>新建分组</button>
+      <span>{t("{count} 个分组", { count: groups.length })}</span>
+      <button disabled={disabled} onClick={() => setAction({ type: "create" })}>{t("新建分组")}</button>
     </div>
     <div className="config-list" {...drag.container}>
       {sections.map(({ key, group, configs: members }) => <ConfigGroupSection key={key}
@@ -43,9 +45,9 @@ export function ConfigGroups({ data, kind, configs, search, selected, disabled, 
         onAssign={onChange} onReorder={onReorder}
         onRename={() => { if (group) setAction({ type: "rename", group }); }}
         onDelete={() => { if (group) setAction({ type: "delete", group }); }} />)}
-      {!visible.length && <p className="empty-small">{query
+      {!visible.length && <p className="empty-small">{t(query
         ? "没有符合条件的配置文件。"
-        : "尚无配置文件，可新建别名，或手动导入受管目录中的文件。"}</p>}
+        : "尚无配置文件，可新建别名，或手动导入受管目录中的文件。")}</p>}
     </div>
     {action && <ConfigGroupDialog action={action} kind={kind} groups={groups} disabled={disabled} saving={saving}
       error={error} onSubmit={onChange} onClose={() => setAction(null)} />}

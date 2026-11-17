@@ -1,48 +1,72 @@
-import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useLayoutEffect, useMemo, useState, type ReactNode } from "react";
+import { translator, type Language } from "./locales";
 
-// 主题仅是前端呈现关注点：以 html[data-theme] 驱动 styles.css 的两套变量，
-// 偏好持久化在 localStorage，与后端配置读写链路完全无关。
+export const palettes = ["jade", "ocean", "violet", "rose", "amber", "slate", "coral", "cyan"] as const;
+export type Palette = typeof palettes[number];
 export type ThemeChoice = "light" | "dark";
+export const paletteNames = {
+  jade: "松石绿", ocean: "海湾蓝", violet: "鸢尾紫", rose: "玫瑰粉",
+  amber: "暖琥珀", slate: "雾岩灰", coral: "珊瑚橙", cyan: "冰川青",
+} as const;
+const prefix = "cli-auto-panel.";
 
-const STORAGE_KEY = "cli-auto-panel.theme";
-
-interface ThemeContextValue {
-  theme: ThemeChoice;
-  toggle: () => void;
+function read(key: string) {
+  try { return localStorage.getItem(prefix + key); }
+  catch (error) { console.error("读取偏好失败：", error); return null; }
 }
-
-const ThemeContext = createContext<ThemeContextValue>({ theme: "dark", toggle: () => {} });
-
-// 读取已保存的偏好；存储不可用时仅退回默认深色，不阻断面板初始化。
-function initialTheme(): ThemeChoice {
-  try {
-    const stored = localStorage.getItem(STORAGE_KEY);
-    if (stored === "light" || stored === "dark") return stored;
-  } catch {
-    // 读取失败（如禁用存储）不视为错误，仍可使用本次会话的默认主题。
-  }
-  return "dark";
+export function clampZoom(value: number) {
+  return Number.isFinite(value) ? Math.min(2, Math.max(.5, Math.round(value * 10) / 10)) : 1;
 }
-
-export function ThemeProvider({ children }: { children: ReactNode }) {
-  const [theme, setTheme] = useState<ThemeChoice>(initialTheme);
-
-  // 主题变化时同步到文档根节点；同一属性也由 index.html 的内联脚本提前设置，
-  // 这里是唯一负责维护它的运行时入口，避免两处状态分叉。
-  useEffect(() => {
+function initialPalette(): Palette {
+  const value = read("palette");
+  return palettes.find((palette) => palette === value) ?? "jade";
+}
+function usePreferencesState() {
+  // 保留旧版已保存的明暗选择；首次使用与参考项目一样采用浅色、绿色及中文。
+  const [theme, setTheme] = useState<ThemeChoice>(() => read("theme") === "dark" ? "dark" : "light");
+  const [palette, setPalette] = useState<Palette>(initialPalette);
+  const [language, setLanguage] = useState<Language>(() => read("language") === "en" ? "en" : "zh");
+  const [zoom, setZoom] = useState(() => clampZoom(Number(read("zoom") ?? 1)));
+  const [storageError, setStorageError] = useState(false);
+  useLayoutEffect(() => {
     document.documentElement.dataset.theme = theme;
-    document.documentElement.style.colorScheme = theme;
+    document.documentElement.dataset.palette = palette;
+    document.documentElement.lang = language === "zh" ? "zh-CN" : "en";
+  }, [theme, palette, language]);
+  useEffect(() => {
     try {
-      localStorage.setItem(STORAGE_KEY, theme);
-    } catch {
-      // 持久化失败只影响下次启动的默认值，不弹错误打扰当前会话。
-    }
-  }, [theme]);
-
-  const toggle = () => setTheme((current) => (current === "dark" ? "light" : "dark"));
-  return <ThemeContext.Provider value={{ theme, toggle }}>{children}</ThemeContext.Provider>;
+      for (const [key, value] of Object.entries({ theme, palette, language, zoom: String(zoom) })) {
+        localStorage.setItem(prefix + key, value);
+      }
+      setStorageError(false);
+    } catch (error) { console.error("保存偏好失败：", error); setStorageError(true); }
+  }, [theme, palette, language, zoom]);
+  useEffect(() => {
+    // 与 Prompt Note 一致，普通滚轮继续滚动；拦截 Ctrl+滚轮以避免双重缩放。
+    const wheel = (event: WheelEvent) => {
+      if (!event.ctrlKey || event.deltaY === 0) return;
+      event.preventDefault();
+      setZoom((value) => clampZoom(value + (event.deltaY < 0 ? .1 : -.1)));
+    };
+    window.addEventListener("wheel", wheel, { passive: false, capture: true });
+    return () => window.removeEventListener("wheel", wheel, { capture: true });
+  }, []);
+  const t = useMemo(() => translator(language), [language]);
+  return { theme, palette, setPalette, language, setLanguage, zoom, setZoom, storageError, t,
+    toggle: () => setTheme((current) => current === "dark" ? "light" : "dark") };
 }
 
-export function useTheme(): ThemeContextValue {
-  return useContext(ThemeContext);
+const ThemeContext = createContext<ReturnType<typeof usePreferencesState> | null>(null);
+export function ThemeProvider({ children }: { children: ReactNode }) {
+  const preferences = usePreferencesState();
+  return <ThemeContext.Provider value={preferences}>{children}</ThemeContext.Provider>;
+}
+export function useTheme() {
+  const preferences = useContext(ThemeContext);
+  if (!preferences) throw new Error("偏好设置提供器未初始化。");
+  return preferences;
+}
+export function useI18n() {
+  const { t, language } = useTheme();
+  return { t, language };
 }

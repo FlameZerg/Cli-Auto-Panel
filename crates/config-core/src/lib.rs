@@ -21,7 +21,7 @@ mod state;
 mod storage_schema;
 
 use model::*;
-use std::path::{Path, PathBuf};
+use std::{collections::HashSet, path::{Path, PathBuf}};
 
 pub struct Engine {
     paths: Paths,
@@ -74,8 +74,10 @@ impl Engine {
             Err(error) => AstResult { warnings: vec![error], ..AstResult::default() },
         };
         let mut inventory = discovery::inventory(&self.paths, &ast, &state);
+        // 一次建立文件索引，绑定检查不再为每个条目重扫完整清单。
+        let config_ids: HashSet<&str> = inventory.configs.iter().map(|config| config.id.as_str()).collect();
         for binding in &state.bindings {
-            if !inventory.configs.iter().any(|c| c.id == binding.config_id) {
+            if !config_ids.contains(binding.config_id.as_str()) {
                 inventory.warnings.push(format!("存在失去入口的绑定 {}，重新导入原文件后才能同步。", binding.config_id));
             }
         }

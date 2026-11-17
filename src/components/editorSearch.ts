@@ -6,7 +6,7 @@ import { EditorView, keymap } from "@codemirror/view";
 const searchInputWidth = "130px";
 
 // 使用内置词条接口，同时翻译可见控件和屏幕阅读器提示，不改写面板 DOM。
-const searchPhrases = {
+export const searchPhrases = {
   "Find": "查找",
   "Replace": "替换",
   "next": "下一个",
@@ -26,9 +26,30 @@ const searchPhrases = {
   "go": "跳转",
 };
 
+// 内置搜索面板仅在创建时读取词条；语言变化时重建面板，不重建编辑器或改动正文。
+export function refreshSearchLanguage(view: EditorView) {
+  if (!searchPanelOpen(view.state)) return;
+  const active = view.dom.ownerDocument.activeElement;
+  const focusedField = active instanceof HTMLElement && view.dom.contains(active)
+    && active.closest(".cm-panel.cm-search") ? active : null;
+  const fieldName = focusedField?.getAttribute("name") ?? null;
+  const range = active instanceof HTMLInputElement && active.selectionStart !== null
+    ? { start: active.selectionStart, end: active.selectionEnd } : null;
+  closeSearchPanel(view);
+  openSearchPanel(view);
+  // 切换语言通常来自侧栏，刷新搜索词条不能把键盘焦点抢回编辑器。
+  if (fieldName) {
+    const field = Array.from(view.dom.querySelectorAll<HTMLElement>(".cm-panel.cm-search [name]"))
+      .find((element) => element.getAttribute("name") === fieldName);
+    field?.focus({ preventScroll: true });
+    if (range && field instanceof HTMLInputElement) field.setSelectionRange(range.start, range.end);
+  } else if (active instanceof HTMLElement && active.isConnected) {
+    active.focus({ preventScroll: true });
+  }
+}
+
 export const editorSearch: Extension = [
   search({ literal: true }),
-  EditorState.phrases.of(searchPhrases),
   // 覆盖 basicSetup 的只开启行为，正文和面板内输入框均使用同一个开关命令。
   Prec.highest(keymap.of([{
     key: "Mod-f",

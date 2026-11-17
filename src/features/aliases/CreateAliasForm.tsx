@@ -5,6 +5,7 @@ import { MergePrioritySelect } from "./MergePrioritySelect";
 import { useMergePreview } from "../preview/useMergePreview";
 import { api } from "../../api";
 import type { Bootstrap, Change, Kind, MergePriority } from "../../types";
+import { useI18n } from "../../theme";
 
 interface Props {
   kind: Kind;
@@ -16,6 +17,7 @@ interface Props {
 }
 
 export function CreateAliasForm({ kind, data, disabled, onSubmit, onDirty, onError }: Props) {
+  const { t } = useI18n();
   const [name, setName] = useState("");
   const [launcher, setLauncher] = useState(kind === "codex" ? "codex" : "claude");
   const [templateId, setTemplateId] = useState("");
@@ -36,7 +38,7 @@ export function CreateAliasForm({ kind, data, disabled, onSubmit, onDirty, onErr
   const entries = data.inventory.configs.filter((c) => c.kind === kind && !c.error);
   // 路径提示使用后端实际目录，并统一末尾分隔符以兼容环境变量覆盖。
   const root = (kind === "codex" ? data.codexRoot : data.claudeRoot).replace(/[\\/]+$/, "");
-  const filename = kind === "codex" ? `config.${name.trim() || "<名称>"}.toml` : `settings.${name.trim() || "<名称>"}.json`;
+  const filename = kind === "codex" ? `config.${name.trim() || t("<名称>")}.toml` : `settings.${name.trim() || t("<名称>")}.json`;
   const change = (action: () => void) => { onDirty(); action(); };
   async function copySource() {
     if (!sourceId || disabled || copying) return;
@@ -53,40 +55,40 @@ export function CreateAliasForm({ kind, data, disabled, onSubmit, onDirty, onErr
   }
   return (
     <div className="form-section">
-      <div className="section-title"><div><span className="eyebrow">NEW CONFIGURATION</span><h2>新建别名配置</h2></div>
+      <div className="section-title"><div><h2>{t("新建别名配置")}</h2></div>
         <span className="tag">{kind === "codex" ? "TOML" : "JSON"}</span></div>
       <div className="form-row">
-        <label>名称后缀<input value={name} disabled={disabled || copying} placeholder="支持中文、字母、数字、点、短横线、下划线"
+        <label>{t("名称后缀")}<input value={name} disabled={disabled || copying} placeholder={t("支持中文、字母、数字、点、短横线、下划线")}
           onChange={(e) => change(() => setName(e.target.value))} /></label>
-        {kind === "codex" && <label>启动版本<select value={launcher} disabled={disabled}
+        {kind === "codex" && <label>{t("启动版本")}<select value={launcher} disabled={disabled}
           onChange={(e) => change(() => setLauncher(e.target.value))}>
-          <option value="codex">仅 codex 旧版</option><option value="codexnew">仅 codexnew 新版</option>
-          <option value="both">旧版和新版共用文件</option></select></label>}
-        <label>通用配置<select value={templateId} disabled={disabled}
+          <option value="codex">{t("仅 Codex 旧版")}</option><option value="codexnew">{t("仅 Codex 新版")}</option>
+          <option value="both">{t("旧版和新版共用文件")}</option></select></label>}
+        <label>{t("通用配置")}<select value={templateId} disabled={disabled}
           onChange={(e) => change(() => setTemplateId(e.target.value))}>
-          <option value="">不应用</option>{templates.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+          <option value="">{t("不应用")}</option>{templates.map((template) => <option key={template.id} value={template.id}>{template.name}</option>)}
         </select></label>
         {/* 新建与编辑共用合并选择，不改变持续同步的绑定关系。 */}
-        <label>合并优先级<MergePrioritySelect value={mergePriority} disabled={disabled || !templateId}
+        <label>{t("合并优先级")}<MergePrioritySelect value={mergePriority} disabled={disabled || !templateId}
           onChange={(value) => change(() => setMergePriority(value))} /></label>
       </div>
-      <InlineNotice messages={[`将创建 ${root}\\${filename}`]} />
+      <InlineNotice messages={[t("将创建 {path}", { path: `${root}\\${filename}` })]} />
       <section className="copy-source">
-        <h3>从已有配置复制</h3>
-        <select value={sourceId} disabled={disabled || copying} onChange={(e) => setSourceId(e.target.value)}>
-          <option value="">选择已有文件</option>{entries.map((c) => <option key={c.id} value={c.id}>{c.aliases.join(" / ") || c.path}</option>)}
+        <h3>{t("从已有配置复制")}</h3>
+        <select aria-label={t("选择已有文件")} value={sourceId} disabled={disabled || copying} onChange={(e) => setSourceId(e.target.value)}>
+          <option value="">{t("选择已有文件")}</option>{entries.map((c) => <option key={c.id} value={c.id}>{c.aliases.join(" / ") || c.path}</option>)}
         </select>
         <button disabled={disabled || copying || !sourceId} onClick={() => void copySource()}>
-          {copying ? "读取中…" : "复制到草稿"}</button>
+          {t(copying ? "读取中…" : "复制到草稿")}</button>
       </section>
-      <label>个别配置</label>
+      <label>{t("个别配置")}</label>
       {/* 与已有配置页共用内联差异，预览内容不混入新建文件的原始草稿。 */}
       <CodeEditor value={content} kind={kind} readOnly={disabled || copying}
         onChange={(value) => change(() => setContent(value))}
         diff={selected ? merged : undefined} />
       <button className="primary" disabled={disabled || copying || !name.trim()}
         onClick={() => onSubmit({ type: "createAlias", kind, launcher, name: name.trim(), content,
-          templateId: templateId || null, mergePriority })}>新建文件并注册别名</button>
+          templateId: templateId || null, mergePriority })}>{t("新建文件并注册别名")}</button>
     </div>
   );
 }

@@ -5,6 +5,7 @@ import { InlineNotice } from "../../components/InlineNotice";
 import type { EditorLanguage } from "../../components/editorSetup";
 import type { SplitDiffRow } from "./splitDiff";
 import { connectSplitEditors, splitEditorExtensions } from "./splitEditorDecorations";
+import { useI18n } from "../../theme";
 
 interface Props {
   before: string; after: string; kind: EditorLanguage; rows: readonly SplitDiffRow[];
@@ -13,6 +14,7 @@ interface Props {
 
 // 左只读、右可编辑，同一共享组件提供主题、语法、撤销和 Ctrl+F，不另建搜索实现。
 export function SplitCodeEditors({ before, after, kind, rows, readOnly, onChange }: Props) {
+  const { t } = useI18n();
   const [left, setLeft] = useState<EditorView | null>(null);
   const [right, setRight] = useState<EditorView | null>(null);
   const [error, setError] = useState("");
@@ -32,13 +34,13 @@ export function SplitCodeEditors({ before, after, kind, rows, readOnly, onChange
     <InlineNotice messages={[error]} tone="error" />
     <div className="split-editor-panes">
       <div className="split-editor-pane">
-        <div className="diff-column-heading">操作前</div>
-        <CodeEditor value={before} kind={kind} readOnly label="操作前，只读"
+        <div className="diff-column-heading">{t("操作前")}</div>
+        <CodeEditor value={before} kind={kind} readOnly label={t("操作前，只读")}
           extensions={splitEditorExtensions} onReady={setLeft} onUpdate={updated} />
       </div>
       <div className="split-editor-pane">
-        <div className="diff-column-heading">操作后</div>
-        <CodeEditor value={after} kind={kind} readOnly={readOnly} onChange={onChange} label="操作后"
+        <div className="diff-column-heading">{t("操作后")}</div>
+        <CodeEditor value={after} kind={kind} readOnly={readOnly} onChange={onChange} label={t("操作后")}
           extensions={splitEditorExtensions} onReady={setRight} onUpdate={updated} />
       </div>
     </div>
