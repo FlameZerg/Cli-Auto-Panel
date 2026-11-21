@@ -8,14 +8,19 @@ interface DragCallbacks {
 }
 
 // 浮层只提供拖动反馈，不参与命中、键盘导航或真实列表布局。
-function dragFeedback(source: HTMLElement, initial: DragPointer) {
-  const rect = source.getBoundingClientRect();
-  const ghost = source.cloneNode(true) as HTMLElement;
+// ghostOf 允许调用方只取源的局部片段（如分组头）作为浮层；返回 null 或缺省时克隆整个源。
+function dragFeedback(source: HTMLElement, initial: DragPointer,
+  ghostOf?: (source: HTMLElement) => HTMLElement | null) {
+  const node = (ghostOf && ghostOf(source)) || source;
+  const rect = node.getBoundingClientRect();
+  const ghost = node.cloneNode(true) as HTMLElement;
   ghost.removeAttribute("id");
   ghost.querySelectorAll("[id]").forEach((element) => element.removeAttribute("id"));
   ghost.setAttribute("aria-hidden", "true");
   ghost.inert = true;
   ghost.draggable = false;
+  // 提取的片段脱离了原容器，补统一外观类恢复背景、边框与投影。
+  if (node !== source) ghost.classList.add("drag-ghost");
   Object.assign(ghost.style, {
     position: "fixed", width: `${rect.width}px`, maxHeight: "50vh", overflow: "hidden",
     margin: "0", pointerEvents: "none", opacity: ".8", zIndex: "10000", boxSizing: "border-box",
@@ -26,12 +31,18 @@ function dragFeedback(source: HTMLElement, initial: DragPointer) {
       ghost.style.left = `${point.x - (initial.x - rect.left)}px`;
       ghost.style.top = `${point.y - (initial.y - rect.top)}px`;
     },
+    // 判定锚点：浮层几何中心。排序层用它做命中与落点判定，保证"浮层在哪，插到哪"。
+    anchor: (point: DragPointer) => ({
+      x: point.x - (initial.x - rect.left) + rect.width / 2,
+      y: point.y - (initial.y - rect.top) + rect.height / 2,
+    }),
     remove: () => ghost.remove(),
   };
 }
 
 // 只替换手势输入：不启动原生 DnD，让滚轮在按住鼠标拖动期间仍能正常派发。
-export function startPointerDrag(source: HTMLElement, initial: PointerEvent, callbacks: DragCallbacks) {
+export function startPointerDrag(source: HTMLElement, initial: PointerEvent, callbacks: DragCallbacks,
+  ghostOf?: (source: HTMLElement) => HTMLElement | null) {
   const document = source.ownerDocument;
   const view = document.defaultView;
   if (!view) return null;
@@ -82,13 +93,13 @@ export function startPointerDrag(source: HTMLElement, initial: PointerEvent, cal
     if (!active) {
       active = true;
       try {
-        feedback = dragFeedback(source, origin);
+        feedback = dragFeedback(source, origin, ghostOf);
         root.style.cursor = "grabbing";
         root.style.userSelect = "none";
         document.addEventListener("click", suppressClick, true);
         // 捕获在稳定的根节点上，避免排序移动源卡片时丢失指针捕获。
         root.setPointerCapture(initial.pointerId);
-        callbacks.start(point);
+        callbacks.start(feedback.anchor(point));
       } catch (failure) {
         // 初始化失败也清理手势与浮层，保留原始错误，不静默降级。
         cancel();
@@ -96,7 +107,7 @@ export function startPointerDrag(source: HTMLElement, initial: PointerEvent, cal
       }
     }
     feedback?.move(point);
-    callbacks.move(point);
+    callbacks.move(feedback ? feedback.anchor(point) : point);
   };
 
   const up = (event: PointerEvent) => {
@@ -104,7 +115,11 @@ export function startPointerDrag(source: HTMLElement, initial: PointerEvent, cal
     const wasActive = active;
     if (wasActive) event.preventDefault();
     dispose();
-    if (wasActive) callbacks.drop({ x: event.clientX, y: event.clientY });
+    if (wasActive) {
+      // dispose 仅移除浮层 DOM；anchor 是纯几何换算，落点判定仍以浮层中心为准。
+      const point = { x: event.clientX, y: event.clientY };
+      callbacks.drop(feedback ? feedback.anchor(point) : point);
+    }
   };
 
   const cancelPointer = (event: PointerEvent) => {

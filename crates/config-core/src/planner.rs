@@ -57,7 +57,7 @@ fn add_guard(plan: &mut ApplyPlan, guard: FileChange) -> Result<()> {
 fn check_output(paths: &Paths, plan: &mut ApplyPlan, kind: Kind, content: &str) -> Result<()> {
     validate(kind, content)?;
     if kind == Kind::Codex {
-        if let Some(guard) = compatibility::inspect_codex(paths, content)? { add_guard(plan, guard)?; }
+        if let Some(guard) = compatibility::inspect_codex(paths)? { add_guard(plan, guard)?; }
     }
     Ok(())
 }

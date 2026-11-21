@@ -107,10 +107,6 @@ impl Engine {
         if let Err(error) = planner::validate(entry.kind, &content) {
             notices.push(format!("{error} 可在编辑器中修复后重新保存。"));
         }
-        // 共享配置的说明不进入编辑页，仅返回真实的语法及兼容性错误。
-        if entry.kind == Kind::Codex {
-            if let Err(error) = compatibility::inspect_codex(&self.paths, &content) { notices.push(error); }
-        }
         Ok(Document { content, hash, notices })
     }
 

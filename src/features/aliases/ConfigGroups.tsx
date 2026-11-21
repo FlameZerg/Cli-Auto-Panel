@@ -21,8 +21,9 @@ export function ConfigGroups({ data, kind, configs, search, selected, disabled, 
   const membership = new Map(groups.flatMap((group) => group.configIds.map((id) => [id, group.id] as const)));
   const query = search.trim().toLowerCase();
   // 整组排序严格复用卡片拖拽；未分组固定末尾，搜索中不提交残缺排列。
+  // live=false：拖动中列表保持静止，仅由分组头浮层与落点指示线表达插入位置，松手一次性插入。
   const drag = useDragSort(groups, (group) => group.id, !disabled && !query && groups.length > 1,
-    (order) => onReorderGroups(order, drag.cancel));
+    (order) => onReorderGroups(order, drag.cancel), { live: false });
   const matches = (config: ConfigEntry) =>
     `${config.aliases.join(" ")} ${config.path}`.toLowerCase().includes(query);
   const visible = configs.filter(matches);
@@ -40,7 +41,9 @@ export function ConfigGroups({ data, kind, configs, search, selected, disabled, 
       {sections.map(({ key, group, configs: members }) => <ConfigGroupSection key={key}
         group={group} configs={members} allConfigs={configs} groups={groups} data={data}
         selected={selected} disabled={disabled} searching={!!query} onSelect={onSelect}
-        groupCard={group ? drag.card(group.id) : undefined}
+        groupCard={group ? drag.card(group.id, undefined,
+          // 拖动整组时浮层只显示分组头，避免大容器半透明块遮挡落点指示。
+          { ghostOf: (section) => section.querySelector<HTMLElement>(".config-group-heading") }) : undefined}
         groupDragging={drag.dragging === key} groupOver={drag.over === key}
         onAssign={onChange} onReorder={onReorder}
         onRename={() => { if (group) setAction({ type: "rename", group }); }}

@@ -110,6 +110,8 @@ main > .welcome { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior-
 .config-group[draggable="true"] > .config-group-heading { cursor: grab; }
 .config-group.dragging { opacity: .45; }
 .config-group.drag-over { box-shadow: 0 -2px 0 0 var(--card-selected-bar); }
+/* 拖拽浮层提取源片段（如分组头）时脱离了原容器，补回与实体分组一致的背景边框及投影。 */
+.drag-ghost { background: var(--surface); border: 1px solid var(--border-control); border-radius: 9px; box-shadow: 0 10px 28px rgba(0, 0, 0, .22); }
 .config-group-heading { display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 10px 8px; border-bottom: 1px solid var(--line); }
 .config-group-heading h3 { min-width: 0; margin: 0; color: var(--col-title-text); font-size: 16px; font-weight: 700; overflow-wrap: anywhere; }
 .config-group-heading h3 > span { margin-left: 6px; font-size: 10px; font-weight: 400; color: var(--muted); }
@@ -129,7 +131,8 @@ main > .welcome { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior-
    让位动画只动 transform（合成层），不触发 layout，保证多卡片同帧平移不掉帧。 */
 .config-card { transition: transform .16s ease, opacity .12s ease; }
 .config-card.dragging { opacity: .45; }
-.config-card.drag-over { box-shadow: 0 -2px 0 0 var(--card-selected-bar); border-radius: 8px 8px 0 0; }
+/* 指示线落在卡片间隙中部（-4px），不压卡片容器边框；不改圆角，避免按钮背景溢出遮挡 shell 边框弧段。 */
+.config-card.drag-over { box-shadow: 0 -4px 0 0 var(--card-selected-bar); }
 .template-list button { transition: transform .16s ease, opacity .12s ease; }
 .template-list button.dragging { opacity: .45; }
 .template-list button.drag-over { box-shadow: 0 -2px 0 0 var(--nav-accent); }
