@@ -1,6 +1,6 @@
 # CLI Auto Panel
 
-本地优先的 Codex／Claude 配置工作台。通过通用配置、独立文件和 PowerShell 别名管理多套配置，支持差异预览、绑定同步、分组、排序及备份恢复。
+适用于 Codex／Claude 的配置管理工作台。通过通用配置、独立文件和 PowerShell 别名管理多套配置，支持差异预览、绑定同步、分组、排序及备份恢复。
 
 ## 界面与偏好
 
@@ -8,13 +8,18 @@
 - 导入文件与备份恢复固定排列在左栏下方，其后依次提供浅／暗主题、中英文和偏好设置，各入口的图标及文字对齐。
 - 偏好设置与 Prompt Note 使用相同的八组配色：松石绿、海湾蓝、鸢尾紫、玫瑰粉、暖琥珀、雾岩灰、珊瑚橙、冰川青。配色在浅色和暗色模式下均可使用。
 - Ctrl＋鼠标滚轮以 10% 为步长缩放，范围 50–200%；底部提供缩小、百分比重置及放大按钮。普通滚轮继续滚动内容。
-- 语言、配色、明暗和缩放只保存在本机前端偏好中，不改写 CLI 配置。用户名称、路径、配置正文和后端原始诊断不参与翻译。
 
 ## 数据保护
 
 配置根目录遵循 `CODEX_HOME`／`CLAUDE_CONFIG_DIR`；未设置时使用当前用户默认目录。实际受管范围以界面提示和后端路径校验为准，不接受默认配置或 Claude 的 `settings.local.json`。
 
 PowerShell profile 仅作为语法解析输入，不执行其中的命令。配置写入、备份和恢复继续经过事务计划、文件身份和哈希检查；写入或恢复中须等待结果返回再关闭窗口。已有终端与会话不会被自动重载或终止。
+
+Codex 使用 `config.名称.toml` 并注册 `codex-名称`，Claude 使用 `settings.名称.json` 并注册 `claude-名称`。每张卡片对应一个配置文件。
+
+搜索期间可在组内拖动命中的卡片，也可聚焦卡片后按 Alt＋↑ 或 Alt＋↓ 移动。搜索隐藏的卡片保留原槽位。
+
+保存通用配置时可继续同步有效的绑定文件，跳过的文件会列在操作提示中。在通用配置页可移除失去入口的绑定，在文件详情可移除读取失败的管理记录并保留原文件。
 
 ## 开发与构建
 
@@ -27,18 +32,6 @@ npm run dev
 
 前端构建为 `npm run build:renderer`，桌面构建为 `npm run build -- --no-bundle`，后者仅生成直接运行的 EXE，不生成安装包。原生 Windows 构建需要 Rust、MSVC、Windows SDK 及 WebView2。
 
-`.github/workflows/build-windows.yml` 在每次推送到 GitHub 后自动构建 Windows EXE，同时保留手动触发。成功后将唯一的 `Cli Auto Panel.exe` 打包为 `Cli-Auto-Panel.zip`，校验条目名称、数量及大小后直接上传 ZIP，不额外套一层压缩包。外层 ZIP 使用连字符，包内 EXE 保留空格。从该次 Actions 运行下载 ZIP，解压后运行根目录中的 `Cli Auto Panel.exe`。产物保留 1 天，过期后可手动触发工作流重新构建。工作流不启动应用、不生成安装包，也不创建 Release；未推送的本地文件修改不会触发云端构建。
-
-Release 由用户自行创建并上传 `Cli-Auto-Panel.zip`，ZIP 内的 `Cli Auto Panel.exe` 保持原名；工作流不自动发布 Release。
-
-Windows 下可执行 `node --test tests/workflow.test.mjs` 检查交付配置与真实压缩流程；CI 在构建前执行同一检查。测试使用二进制夹具，不启动应用，不替代原生 EXE 验收。
-
-应用图标使用独立的“终端路由”造型，采用石墨灰、冷白和电蓝，不跟随工作区主题。源文件为 `public/app-icon.svg`，PNG 预览为 `src-tauri/icons/icon.png`，Windows 图标为 `src-tauri/icons/icon.ico`；左上角 CLI 标识保持独立。修改 SVG 后可通过已安装的 Tauri CLI 更新原生资源：
-
 ```powershell
 npm run tauri -- icon public/app-icon.svg --output src-tauri/icons
 ```
-
-## 加载策略
-
-首页优先加载导航及配置清单，编辑器和差异界面按需加载。并发中的清单读取共用一次后端扫描，完成即释放，写入前后隔离在途快照。单轮扫描复用同路径、同产品的路径校验结果，下一轮仍重新校验；不跳过文件身份、硬链接、哈希或恢复检查。实际启动及扫描耗时应在目标 Windows 环境测量。

@@ -1,5 +1,4 @@
 export type Kind = "codex" | "claude";
-export type CodexLauncher = "codex" | "codexnew" | "both";
 export type MergePriority = "current" | "template";
 
 export interface Template {
@@ -31,6 +30,12 @@ export interface ConfigEntry {
   error: string | null;
 }
 
+export interface OrphanedBinding {
+  configId: string;
+  templateId: string;
+  filename: string | null;
+}
+
 // 分组属于产品页签，只组织卡片，不关联通用配置或改变真实目录。
 export interface ConfigGroup {
   id: string;
@@ -52,7 +57,8 @@ export interface Bootstrap {
     configGroups?: ConfigGroup[];
     templateOrder?: string[];
   };
-  inventory: { configs: ConfigEntry[]; warnings: string[] };
+  inventory: { configs: ConfigEntry[]; warnings: { id: string; message: string }[] };
+  orphanedBindings: OrphanedBinding[];
   history: { id: string; label: string; createdAt: string; canRestore: boolean; legacy: boolean }[];
   historyError: string | null;
   profilePath: string;
@@ -93,6 +99,8 @@ export interface Preview {
   notices: string[];
 }
 
+export type Preparation = Preview | { notices: string[] };
+
 export type Change =
   | { type: "saveTemplate"; id: string | null; name: string; kind: Kind; content: string }
   | { type: "deleteTemplate"; id: string }
@@ -102,12 +110,13 @@ export type Change =
       templateId: string | null; mergePriority: MergePriority; expectedHash: string;
     }
   | {
-      type: "createAlias"; kind: Kind; launcher: string; name: string; content: string;
+      type: "createAlias"; kind: Kind; name: string; content: string;
       templateId: string | null; mergePriority: MergePriority;
     }
   | { type: "removeAlias"; name: string }
-  | { type: "setCodexLauncher"; id: string; launcher: CodexLauncher; expectedHash: string }
   | { type: "deleteConfig"; id: string; expectedHash: string }
+  | { type: "forgetConfig"; id: string }
+  | { type: "removeOrphanedBinding"; configId: string; templateId: string }
   | { type: "importConfig"; path: string; kind: Kind }
   | { type: "restoreBackup"; id: string }
   | { type: "reorderTemplates"; kind: Kind; order: string[] }
@@ -129,7 +138,6 @@ export interface TemplateDraft {
 }
 
 export interface ConfigDraft {
-  id: string;
   name: string;
   content: string;
   hash: string;

@@ -1,12 +1,14 @@
 use crate::{
-    alias_service, compatibility, discovery, rename_service, state,
+    alias_service, binding_recovery, compatibility, discovery, rename_service, state,
     files::{self, Text}, merge_json, merge_toml,
     model::*,
 };
 use std::path::Path;
 
+const MAX_CONFIG_BYTES: usize = 4 * 1024 * 1024;
+
 pub fn validate(kind: Kind, content: &str) -> Result<()> {
-    if content.len() > 4 * 1024 * 1024 { return Err("单份配置不能超过 4 MiB。".into()); }
+    if content.len() > MAX_CONFIG_BYTES { return Err("单份配置不能超过 4 MiB。".into()); }
     match kind {
         Kind::Claude => { merge_json::parse(content)?; }
         Kind::Codex => { merge_toml::parse(content)?; }
@@ -63,12 +65,12 @@ fn check_output(paths: &Paths, plan: &mut ApplyPlan, kind: Kind, content: &str) 
 }
 
 fn replace_binding(
-    plan: &mut ApplyPlan, config_id: &str, selected: Option<&Template>, hash: String,
+    plan: &mut ApplyPlan, config_id: &str, path: &Path, selected: Option<&Template>, hash: String,
     overrides: Vec<Vec<String>>, merge_priority: MergePriority,
 ) {
     if let Some(selected) = selected {
         let binding = Binding {
-            config_id: config_id.into(), template_id: selected.id.clone(),
+            config_id: config_id.into(), config_path: Some(path.to_string_lossy().into()), template_id: selected.id.clone(),
             applied_content: selected.content.clone(), applied_revision: selected.revision, last_hash: hash,
             overrides, merge_priority,
         };
@@ -85,10 +87,9 @@ fn replace_binding(
 }
 
 fn save_config(
-    paths: &Paths, inventory: &Inventory, plan: &mut ApplyPlan,
-    id: &str, content: &str, template_id: Option<&str>, merge_priority: MergePriority, expected_hash: &str,
+    paths: &Paths, plan: &mut ApplyPlan, entry: &ConfigEntry,
+    content: &str, template_id: Option<&str>, merge_priority: MergePriority, expected_hash: &str,
 ) -> Result<()> {
-    let entry = config(inventory, id)?;
     if let Some(error) = &entry.error { return Err(error.clone()); }
     let path = discovery::managed_path(paths, Path::new(&entry.path), entry.kind)?;
     let mut change = files::capture(&path, None)?;
@@ -96,7 +97,7 @@ fn save_config(
     if files::hash(&raw) != expected_hash {
         return Err("配置在打开编辑器后被外部修改，请先保留未保存的内容，再刷新清单并打开配置合并你的改动。".into());
     }
-    let old = plan.before_state.bindings.iter().find(|b| b.config_id == id);
+    let old = plan.after_state.bindings.iter().find(|b| b.config_id == entry.id);
     let selected = template_id.map(|id| template(&plan.after_state, id, entry.kind).cloned()).transpose()?;
     let (output, overrides) = merge_config(entry.kind, content, old,
         selected.as_ref().map(|t| t.content.as_str()), merge_priority)?;
@@ -106,14 +107,15 @@ fn save_config(
     if !unchanged || selected.is_some() { check_output(paths, plan, entry.kind, &output)?; }
     let bytes = if unchanged { raw } else { original.encode(&output) };
     change.after = Some(files::pack(&bytes));
-    replace_binding(plan, id, selected.as_ref(), files::hash(&bytes), overrides, merge_priority);
+    replace_binding(plan, &entry.id, &path, selected.as_ref(), files::hash(&bytes), overrides, merge_priority);
     plan.files.push(change);
-    plan.label = "保存配置及模板绑定".into();
+    let filename = binding_recovery::filename(&path).unwrap_or_else(|| entry.path.clone());
+    plan.label = format!("保存「{filename}」及模板绑定");
     Ok(())
 }
 
 fn save_template(
-    paths: &Paths, inventory: &Inventory, plan: &mut ApplyPlan,
+    paths: &Paths, inventory: &Inventory, orphaned: &[OrphanedBinding], plan: &mut ApplyPlan,
     id: Option<String>, name: String, kind: Kind, content: String,
 ) -> Result<()> {
     // 名称长度按字符而非 UTF-8 字节计数，中文名称与前端限制保持一致。
@@ -121,7 +123,7 @@ fn save_template(
         return Err("通用配置名称必须为非空且不含控制字符的短名称。".into());
     }
     let content = content.replace("\r\n", "\n");
-    if content.len() > 4 * 1024 * 1024 { return Err("单份通用配置不能超过 4 MiB。".into()); }
+    if content.len() > MAX_CONFIG_BYTES { return Err("单份通用配置不能超过 4 MiB。".into()); }
     if !content.trim().is_empty() { validate(kind, &content)?; }
     let old = id.as_deref().map(|id| template(&plan.before_state, id, kind).cloned()).transpose()?;
     let template_id = id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
@@ -141,12 +143,23 @@ fn save_template(
     }
     let bindings: Vec<Binding> = plan.before_state.bindings.iter()
         .filter(|b| b.template_id == template_id).cloned().collect();
+    let entries: std::collections::HashMap<_, _> = inventory.configs.iter()
+        .map(|entry| (entry.id.as_str(), entry)).collect();
     let mut updates = std::collections::HashMap::new();
     for binding in bindings {
         // 绑定决定是否参与同步，优先级决定同名字段取值，不能强制覆盖用户的当前配置优先选择。
         // 正文未变也核对文件，通用优先可恢复公共值，当前优先保留本地值；独有字段继续保留。
-        let entry = config(inventory, &binding.config_id)?;
-        if let Some(error) = &entry.error { return Err(error.clone()); }
+        let Some(entry) = entries.get(binding.config_id.as_str()) else {
+            let filename = orphaned.iter().find(|entry| entry.config_id == binding.config_id)
+                .and_then(|entry| entry.filename.as_deref()).unwrap_or("原文件名不可用");
+            plan.notices.push(format!("已跳过失去入口的绑定（{filename}）。可在通用配置中移除此绑定。"));
+            continue;
+        };
+        let filename = binding_recovery::filename(&entry.path).unwrap_or_else(|| entry.path.clone());
+        if let Some(error) = &entry.error {
+            plan.notices.push(format!("已跳过「{filename}」：{error} 可在文件详情移除管理记录。"));
+            continue;
+        }
         let path = discovery::managed_path(paths, Path::new(&entry.path), kind)?;
         let mut change = files::capture(&path, None)?;
         let raw = files::unpack(change.before.as_deref().ok_or("绑定文件不存在。")?)?;
@@ -154,13 +167,22 @@ fn save_template(
         if entry.hash.as_deref() != Some(files::hash(&raw).as_str()) {
             return Err("准备同步时绑定文件再次发生外部改动，请刷新清单后重试。".into());
         }
-        let original = Text::decode(&raw, false)?;
-        let (output, overrides) = merge_config(kind, &original.value, Some(&binding), Some(&content),
-            binding.merge_priority)?;
-        check_output(paths, plan, kind, &output)?;
+        let (original, (output, overrides)) = match Text::decode(&raw, false).and_then(|original| {
+            if original.value.len() > MAX_CONFIG_BYTES { return Err("单份配置不能超过 4 MiB。".into()); }
+            let merged = merge_config(kind, &original.value, Some(&binding), Some(&content), binding.merge_priority)?;
+            Ok((original, merged))
+        }) {
+            Ok(result) => result,
+            Err(error) => {
+                plan.notices.push(format!("已跳过「{filename}」：{error} 可在文件详情修复配置、解除绑定或移除管理记录。"));
+                continue;
+            }
+        };
+        check_output(paths, plan, kind, &output).map_err(|error| format!("「{filename}」：{error}"))?;
         let bytes = if output == original.value { raw } else { original.encode(&output) };
         change.after = Some(files::pack(&bytes));
         updates.insert(binding.config_id.clone(), Binding {
+            config_path: Some(entry.path.clone()),
             applied_content: content.clone(), applied_revision: next.revision,
             last_hash: files::hash(&bytes), overrides, ..binding
         });
@@ -176,7 +198,7 @@ fn save_template(
 
 fn create_alias(
     paths: &Paths, ast: &AstResult, profile: &str, inventory: &Inventory, plan: &mut ApplyPlan,
-    kind: Kind, launcher: &str, name: &str, content: &str, template_id: Option<&str>,
+    kind: Kind, name: &str, content: &str, template_id: Option<&str>,
     merge_priority: MergePriority,
 ) -> Result<()> {
     validate(kind, content)?;
@@ -184,9 +206,13 @@ fn create_alias(
     let (output, overrides) = merge_config(kind, content, None,
         selected.as_ref().map(|template| template.content.as_str()), merge_priority)?;
     check_output(paths, plan, kind, &output)?;
-    let id = alias_service::create(paths, plan, ast, profile, kind, launcher, name, &output)?;
-    if inventory.configs.iter().any(|c| c.id == id) { return Err("配置目标已在管理清单中。".into()); }
-    replace_binding(plan, &id, selected.as_ref(), files::hash(output.as_bytes()), overrides, merge_priority);
+    let path = alias_service::create(paths, plan, ast, profile, kind, name, &output)?;
+    let id = discovery::key(&path);
+    if inventory.configs.iter().any(|c| c.id == id)
+        || plan.before_state.bindings.iter().any(|binding| binding.config_id == id) {
+        return Err(format!("「{}」已在管理清单中或仍有关联绑定。", path.display()));
+    }
+    replace_binding(plan, &id, &path, selected.as_ref(), files::hash(output.as_bytes()), overrides, merge_priority);
     plan.identity_changes.push(ConfigIdentityChange { before: None, after: Some(id) });
     plan.label = "新建配置文件并注册别名".into();
     Ok(())
@@ -242,13 +268,13 @@ fn restore(plan: &mut ApplyPlan, backup: &ApplyPlan) -> Result<()> {
 
 pub fn prepare(
     paths: &Paths, state: PanelState, inventory: &Inventory, ast: &AstResult,
-    profile_hash: &str, request: ChangeRequest, backup: Option<&ApplyPlan>,
+    profile_hash: &str, request: ChangeRequest, backup: Option<&ApplyPlan>, orphaned: &[OrphanedBinding],
 ) -> Result<ApplyPlan> {
     if request.expected_revision != state.revision { return Err("界面状态已过期，请先刷新。".into()); }
     if request.expected_layout_revision != state.layout_revision {
         return Err("界面布局已过期，请先刷新。".into());
     }
-    // 模板保存必须检查全部绑定；删除及恢复仍沿用独立元数据入口。
+    // 模板同步和绑定清理使用当前清单；删除模板及恢复走独立入口。
     let metadata_only = matches!(&request.change,
         Change::DeleteTemplate { .. } | Change::RestoreBackup { .. });
     let (profile, guards) = if metadata_only {
@@ -278,17 +304,14 @@ pub fn prepare(
     };
     match request.change {
         Change::SaveTemplate { id, name, kind, content } =>
-            save_template(paths, inventory, &mut plan, id, name, kind, content)?,
+            save_template(paths, inventory, orphaned, &mut plan, id, name, kind, content)?,
         Change::SaveConfig { id, name, content, template_id, merge_priority, expected_hash } => {
-            save_config(paths, inventory, &mut plan, &id, &content, template_id.as_deref(), merge_priority, &expected_hash)?;
-            // 在同一计划内迁移已生成的配置结果，保证草稿、命令和模板绑定一起提交或恢复。
-            if let Some(name) = name {
-                rename_service::rename(paths, &mut plan, ast, &profile,
-                    inventory, config(inventory, &id)?, &name)?;
-            }
+            let entry = config(inventory, &id)?;
+            save_config(paths, &mut plan, entry, &content, template_id.as_deref(), merge_priority, &expected_hash)?;
+            rename_service::relocate(paths, &mut plan, ast, &profile, inventory, entry, name.as_deref())?;
         }
-        Change::CreateAlias { kind, launcher, name, content, template_id, merge_priority } =>
-            create_alias(paths, ast, &profile, inventory, &mut plan, kind, &launcher, &name,
+        Change::CreateAlias { kind, name, content, template_id, merge_priority } =>
+            create_alias(paths, ast, &profile, inventory, &mut plan, kind, &name,
                 &content, template_id.as_deref(), merge_priority)?,
         Change::DeleteTemplate { id } => {
             let target = plan.after_state.templates.iter().find(|t| t.id == id).ok_or("模板不存在。")?;
@@ -306,19 +329,34 @@ pub fn prepare(
             alias_service::remove_alias(paths, &mut plan, ast, &profile, entry, &name)?;
             plan.label = format!("移除别名入口 {name}");
         }
-        Change::SetCodexLauncher { id, launcher, expected_hash } => {
-            crate::launcher_service::set_launcher(paths, &mut plan, ast, &profile,
-                config(inventory, &id)?, &launcher, &expected_hash)?;
-        }
         Change::DeleteConfig { id, expected_hash } => {
-            alias_service::delete_config(paths, &mut plan, ast, &profile,
-                config(inventory, &id)?, &expected_hash)?;
-            plan.label = "真实删除配置文件及全部关联别名".into();
+            let entry = config(inventory, &id)?;
+            alias_service::delete_config(paths, &mut plan, ast, &profile, entry, &expected_hash)?;
+            let filename = binding_recovery::filename(&entry.path).unwrap_or_else(|| entry.path.clone());
+            plan.label = format!("删除「{filename}」及关联别名");
+        }
+        Change::ForgetConfig { id } => {
+            let entry = config(inventory, &id)?;
+            let aliases = alias_service::forget_config(paths, &mut plan, ast, &profile, entry)?;
+            let filename = binding_recovery::filename(&entry.path).unwrap_or_else(|| entry.path.clone());
+            plan.label = format!("移除「{filename}」的管理记录");
+            plan.notices.push(format!("将清理导入记录、模板绑定和分组归属，并移除 {} 个面板内别名。保留原路径中的文件。", aliases.len()));
+        }
+        Change::RemoveOrphanedBinding { config_id, template_id } => {
+            let orphan = orphaned.iter()
+                .find(|entry| entry.config_id == config_id && entry.template_id == template_id)
+                .ok_or("这份绑定已变化，请刷新清单后再清理。")?;
+            let filename = orphan.filename.as_deref().unwrap_or("原文件名不可用");
+            plan.after_state.bindings.retain(|entry| entry.config_id != config_id || entry.template_id != template_id);
+            plan.label = format!("移除失去入口的绑定（{filename}）");
+            plan.notices.push("只清理所选的通用配置绑定。".into());
         }
         Change::ImportConfig { path, kind } => {
             let resolved = discovery::managed_path(paths, Path::new(&path), kind)?;
             let id = discovery::key(&resolved);
-            if inventory.configs.iter().any(|c| c.id == id) { return Err("此文件已在管理清单中。".into()); }
+            if inventory.configs.iter().any(|c| c.id == id) {
+                return Err("此文件已在管理清单中。".into());
+            }
             let change = files::capture(&resolved, None)?;
             let original = change.before.clone().ok_or("导入文件不存在。")?;
             validate(kind, &Text::decode(&files::unpack(&original)?, false)?.value)?;
@@ -338,14 +376,15 @@ pub fn prepare(
     plan.after_state = state::finish_layout(&plan.before_state, &plan.after_state)?;
     plan.notices.sort();
     plan.notices.dedup();
+    compact_guards(plan)
+}
+
+pub(crate) fn unchanged(plan: &ApplyPlan) -> Result<bool> {
+    if !plan.files.is_empty() { return Ok(false); }
     let mut comparable = plan.after_state.clone();
     comparable.revision = plan.before_state.revision;
-    let same_state = serde_json::to_string(&comparable).map_err(|e| e.to_string())?
-        == serde_json::to_string(&plan.before_state).map_err(|e| e.to_string())?;
-    if same_state && plan.files.iter().all(|f| f.before == f.after) {
-        return Err("没有需要保存的变化。".into());
-    }
-    compact_guards(plan)
+    Ok(serde_json::to_string(&comparable).map_err(|e| e.to_string())?
+        == serde_json::to_string(&plan.before_state).map_err(|e| e.to_string())?)
 }
 
 fn compact_guards(mut plan: ApplyPlan) -> Result<ApplyPlan> {

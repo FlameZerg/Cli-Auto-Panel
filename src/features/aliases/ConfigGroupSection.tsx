@@ -1,27 +1,33 @@
+import { useEffect, useRef } from "react";
 import { useDragSort } from "../drag/useDragSort";
+import { fileName } from "./configNames";
 import type { Bootstrap, ConfigEntry, ConfigGroup, ConfigGroupChange } from "../../types";
 import { useI18n } from "../../theme";
 
 // 每组独立处理拖拽，只替换当前组在全量顺序中的槽位，不产生跨组隐式移动。
 export function ConfigGroupSection({ group, configs, allConfigs, groups, data, selected,
-  disabled, searching, groupCard, groupDragging, groupOver, onSelect, onAssign, onReorder, onRename, onDelete }: {
+  disabled, autoSort, groupCard, groupDragging, groupOver, onSelect, onAssign, onReorder, onRename, onDelete }: {
   group: ConfigGroup | null; configs: ConfigEntry[]; allConfigs: ConfigEntry[];
-  groups: ConfigGroup[]; data: Bootstrap; selected: string | null; disabled: boolean; searching: boolean;
+  groups: ConfigGroup[]; data: Bootstrap; selected: string | null; disabled: boolean; autoSort: boolean;
   groupCard?: ReturnType<ReturnType<typeof useDragSort<ConfigGroup>>["card"]>;
   groupDragging: boolean; groupOver: boolean;
   onSelect: (config: ConfigEntry) => void;
   onAssign: (change: ConfigGroupChange) => void;
-  onReorder: (order: string[], cancel: () => void) => void;
+  onReorder: (order: string[], cancel: () => void, message: string) => void;
   onRename: () => void; onDelete: () => void;
 }) {
   const { t } = useI18n();
-  const drag = useDragSort(configs, (config) => config.id, !disabled && !searching, (order) => {
+  const sortable = !disabled && !autoSort && configs.length > 1;
+  const drag = useDragSort(configs, (config) => config.id, sortable, (order, moved) => {
     const members = new Set(order);
-    // 后端仍接收当前产品的完整排列；其他组和未分组的相对位置保持不变。
+    // 只替换命中搜索的卡片槽位，隐藏卡片及其他组保持原位，后端仍接收完整排列。
     const slots = allConfigs.filter((config) => members.has(config.id)).map((config) => config.id);
     const replacements = new Map(slots.map((id, index) => [id, order[index]]));
-    onReorder(allConfigs.map((config) => replacements.get(config.id) ?? config.id), drag.cancel);
-  });
+    const config = configs.find((item) => item.id === moved);
+    if (!config) { drag.cancel(); return; }
+    onReorder(allConfigs.map((config) => replacements.get(config.id) ?? config.id), drag.cancel,
+      t("{filename} 已移至当前列表第 {position} 位。", { filename: fileName(config.path), position: order.indexOf(moved) + 1 }));
+  }, { live: false, midpoint: true });
   const title = group?.name ?? t("未分组");
 
   return <section {...groupCard} onClickCapture={groupCard?.onClick}
@@ -38,7 +44,9 @@ export function ConfigGroupSection({ group, configs, allConfigs, groups, data, s
       {drag.ordered.map((config) => <ConfigCard key={config.id} config={config} data={data}
         groups={groups} groupId={group?.id ?? ""} disabled={disabled} selected={selected === config.id}
         dragging={drag.dragging === config.id} over={drag.over === config.id}
-        card={drag.card(config.id, () => onSelect(config))} onAssign={onAssign} />)}
+        after={drag.after} sortable={sortable}
+        card={drag.card(config.id, () => onSelect(config))} onAssign={onAssign}
+        onMove={(direction) => drag.moveBy(config.id, direction)} />)}
       {!configs.length && <p className="config-group-empty">{t(group
         ? "暂无配置，可通过卡片下方的选择框移入。"
         : "暂无未分组配置。新建或导入的配置默认放在这里。")}</p>}
@@ -46,32 +54,50 @@ export function ConfigGroupSection({ group, configs, allConfigs, groups, data, s
   </section>;
 }
 
-function ConfigCard({ config, data, groups, groupId, disabled, selected, dragging, over, card, onAssign }: {
+function ConfigCard({ config, data, groups, groupId, disabled, selected, dragging, over, after, sortable, card, onAssign, onMove }: {
   config: ConfigEntry; data: Bootstrap; groups: ConfigGroup[]; groupId: string; disabled: boolean;
   selected: boolean; dragging: boolean; over: boolean;
+  after: boolean; sortable: boolean;
   card: ReturnType<ReturnType<typeof useDragSort<ConfigEntry>>["card"]>;
   onAssign: (change: ConfigGroupChange) => void;
+  onMove: (direction: number) => boolean;
 }) {
   const { t } = useI18n();
+  const button = useRef<HTMLButtonElement>(null);
+  const keepFocus = useRef(false);
+  useEffect(() => {
+    if (!disabled && keepFocus.current) {
+      keepFocus.current = false;
+      button.current?.focus();
+    }
+  }, [disabled]);
   const binding = data.state.bindings.find((item) => item.configId === config.id);
-  const template = data.state.templates.find((item) => item.id === binding?.templateId);
-  // 正常状态仅显示已同步或未同步；历史覆盖记录不作为额外的警告状态。
-  const health = config.error ? "读取错误" : binding
-    ? binding.lastHash !== config.hash ? "外部已修改"
-      : template?.content !== binding.appliedContent ? "未同步" : "已同步"
-    : "未同步";
-  // 无绑定是正常选择；只有读取错误、外部变化或已绑定但未同步时保留警告。
-  const warning = config.error || health === "外部已修改" || (!!binding && health === "未同步");
-  const label = config.aliases.join(" / ") || config.path.split(/[\\/]/).pop() || t("手动导入");
+  const template = binding && data.state.templates.find((item) => item.id === binding.templateId);
+  const stale = binding && template?.content !== binding.appliedContent;
+  const modified = binding && binding.lastHash !== config.hash;
+  const health = config.error ? "读取错误" : modified ? "外部已修改" : stale || !binding ? "未同步" : "已同步";
+  const warning = !!config.error || modified || stale;
+  const commands = config.aliases.join(" / ");
+  const filename = fileName(config.path);
+  const label = commands || filename;
 
-  return <div className={`config-card-shell ${selected ? "selected" : ""}`}>
-    <button disabled={disabled} {...card}
-      className={`config-card ${dragging ? "dragging" : ""} ${over ? "drag-over" : ""} ${selected ? "selected" : ""}`}>
-      <div className="card-label"><strong>{config.aliases.join(" / ") || t("手动导入")}</strong>
+  const dropClass = over ? (after ? "drag-over-after" : "drag-over") : "";
+  return <div className={`config-card-shell ${selected ? "selected" : ""} ${dropClass}`}
+    data-drag-sort-scope={card["data-drag-sort-scope"]} data-drag-sort-key={config.id}>
+    <button ref={button} disabled={disabled} {...card}
+      aria-keyshortcuts={sortable ? "Alt+ArrowUp Alt+ArrowDown" : undefined}
+      onKeyDown={(event) => {
+        if (!sortable || !event.altKey || event.ctrlKey || event.metaKey || event.shiftKey
+          || (event.key !== "ArrowUp" && event.key !== "ArrowDown")) return;
+        event.preventDefault();
+        keepFocus.current = onMove(event.key === "ArrowUp" ? -1 : 1);
+      }}
+      className={`config-card ${dragging ? "dragging" : ""} ${selected ? "selected" : ""}`}>
+      <div className="card-label"><strong>{commands || t("手动导入")}</strong>
         <span className={`status ${warning ? "warning" : binding ? "synced" : ""}`}
           title={config.error || t(health)}>{t(health)}</span></div>
-      <span className="card-path" title={config.path}>{config.path.split(/[\\/]/).pop()}</span>
-      <span className="card-template">{template ? template.name : t("保留原配置，可手动选择模板")}</span>
+      <span className="card-path" title={config.path}>{filename}</span>
+      <span className="card-template">{template?.name || t("保留原配置，可手动选择模板")}</span>
     </button>
     {/* 归组控件置于卡片按钮之外，避免嵌套交互元素及选择分组时误打开编辑器。 */}
     <label className="config-group-select">{t("分组")}

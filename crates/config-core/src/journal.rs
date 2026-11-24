@@ -92,8 +92,10 @@ fn manifest_bytes(path: &Path) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
-pub fn pending_plan(directory: &Path) -> Result<ApplyPlan> {
-    read_manifest(&active(directory))
+pub fn pending_plan(directory: &Path) -> Result<(ApplyPlan, Vec<u8>)> {
+    let bytes = manifest_bytes(&active(directory))?;
+    let plan = serde_json::from_slice(&bytes).map_err(|_| "恢复记录已损坏，禁止猜测恢复。")?;
+    Ok((plan, bytes))
 }
 
 pub fn history(directory: &Path, state: &PanelState) -> Result<Vec<HistoryEntry>> {
@@ -256,10 +258,10 @@ pub fn commit(directory: &Path, store: &mut Store, plan: &ApplyPlan) -> Result<O
     if plan.files.is_empty() {
         return match store.commit_plan(plan, &bytes, &[]) {
             Ok(()) => Ok(None),
-            Err(error) => match store.committed(plan) {
+            Err(error) => match store.committed(plan, Some(&bytes)) {
                 Ok(true) => Ok(Some(format!("操作已提交，数据库返回异常：{error}"))),
                 Ok(false) => Err(error),
-                Err(check) => Err(format!("{error}；提交结果无法确认，操作编号 {}：{check}", plan.id)),
+                Err(check) => Err(format!("{error}；无法确认「{}」的提交结果：{check}", plan.label)),
             },
         };
     }
@@ -286,26 +288,26 @@ pub fn commit(directory: &Path, store: &mut Store, plan: &ApplyPlan) -> Result<O
     })();
     if let Err(error) = result {
         // COMMIT 报错不等于确定未提交；必须先读取持久凭据，再决定是否允许回滚。
-        match store.committed(plan) {
+        match store.committed(plan, Some(&bytes)) {
             Ok(true) => return Ok(Some(format!("操作已提交，保留恢复日志供清理：{error}"))),
             Ok(false) => {}
             Err(check) => return Err(format!("{error}；提交结果无法确认，保留恢复日志：{check}")),
         }
         return match rollback(directory, store, plan) {
             Ok(()) => {
-                clean_completed(directory, plan)
+                clean_completed(directory, plan, &bytes)
                     .map_err(|e| format!("{error}；已回滚，但日志无法清理：{e}"))?;
                 Err(format!("{error}；本次操作已回滚。"))
             }
             Err(recovery_error) => Err(format!("{error}；恢复未完成：{recovery_error}")),
         };
     }
-    Ok(clean_completed(directory, plan).err())
+    Ok(clean_completed(directory, plan, &bytes).err())
 }
 
-fn clean_completed(directory: &Path, plan: &ApplyPlan) -> Result<()> {
-    // 新版日志使用同一份序列化字节写入，清理时无需再解析整份配置正文。
-    if manifest_bytes(&active(directory))? != history_store::encode(plan)? {
+fn clean_completed(directory: &Path, plan: &ApplyPlan, manifest: &[u8]) -> Result<()> {
+    // 使用最初读取或写入的清单校验，兼容带有已停用字段的历史日志。
+    if manifest_bytes(&active(directory))? != manifest {
         return Err("待清理日志已被替换，拒绝删除其他操作的记录。".into());
     }
     // 校验日志后先清理归属旁证，最后清理 pending；失败仍可再次执行同一清理。
@@ -313,26 +315,24 @@ fn clean_completed(directory: &Path, plan: &ApplyPlan) -> Result<()> {
     fs::remove_file(active(directory)).map_err(|e| format!("操作已处理，但恢复日志清理失败：{e}"))
 }
 
-pub fn recover(directory: &Path, store: &mut Store) -> Result<()> {
-    let plan = pending_plan(directory)?;
-    if plan.format_version == 1 && store.is_legacy() { return recover_legacy(directory, store); }
+pub fn recover(directory: &Path, store: &mut Store, plan: &ApplyPlan, manifest: &[u8]) -> Result<()> {
+    if plan.format_version == 1 && store.is_legacy() { return recover_legacy(directory, store, plan); }
     if plan.format_version != 2 || store.is_legacy() {
         return Err("恢复日志与数据库版本不匹配，禁止猜测恢复。".into());
     }
-    if store.committed(&plan)? {
+    if store.committed(plan, Some(manifest))? {
         for change in &plan.files {
             if current_content(change)? != change.after {
                 return Err("操作已提交，但文件出现外部改动；保留日志，禁止自动回滚或覆盖。".into());
             }
         }
-        return clean_completed(directory, &plan);
+        return clean_completed(directory, plan, manifest);
     }
-    rollback(directory, store, &plan)?;
-    clean_completed(directory, &plan)
+    rollback(directory, store, plan)?;
+    clean_completed(directory, plan, manifest)
 }
 
-fn recover_legacy(directory: &Path, store: &mut Store) -> Result<()> {
-    let plan = pending_plan(directory)?;
+fn recover_legacy(directory: &Path, store: &mut Store, plan: &ApplyPlan) -> Result<()> {
     let current = store.load()?;
     let committed = serde_json::to_value(&current).map_err(|e| e.to_string())?
         == serde_json::to_value(&plan.after_state).map_err(|e| e.to_string())?;
@@ -343,10 +343,10 @@ fn recover_legacy(directory: &Path, store: &mut Store) -> Result<()> {
         if !all_after {
             return Err("旧版操作已提交，但文件出现外部改动；保留日志，禁止自动回滚或覆盖。".into());
         }
-        finish(directory, &plan)?;
-        return clean_claims(directory, &plan);
+        finish(directory, plan)?;
+        return clean_claims(directory, plan);
     }
-    rollback(directory, store, &plan)?;
-    clean_claims(directory, &plan)?;
+    rollback(directory, store, plan)?;
+    clean_claims(directory, plan)?;
     fs::remove_file(active(directory)).map_err(|e| format!("恢复成功，但日志无法移除：{e}"))
 }

@@ -1,6 +1,6 @@
 use crate::{
     files,
-    model::{AstResult, ConfigEntry, Inventory, Kind, PanelState, Paths, Result},
+    model::{AstResult, ConfigEntry, Inventory, InventoryWarning, Kind, PanelState, Paths, Result},
 };
 use std::{collections::BTreeMap, fs, path::{Path, PathBuf}};
 
@@ -19,27 +19,50 @@ pub fn key(path: &Path) -> String {
     files::hash(path.to_string_lossy().to_lowercase().as_bytes())
 }
 
-pub fn managed_path(paths: &Paths, path: &Path, kind: Kind) -> Result<PathBuf> {
-    let resolved = normalized(path)?;
+pub(crate) fn filename(kind: Kind, name: &str) -> String {
+    match kind {
+        Kind::Codex => format!("config.{name}.toml"),
+        Kind::Claude => format!("settings.{name}.json"),
+    }
+}
+
+pub(crate) fn suffix(kind: Kind, name: &str) -> Option<&str> {
+    let (prefix, extension) = match kind {
+        Kind::Codex => ("config.", ".toml"),
+        Kind::Claude => ("settings.", ".json"),
+    };
+    name.strip_prefix(prefix)?.strip_suffix(extension).filter(|suffix| !suffix.is_empty())
+}
+
+fn in_root(paths: &Paths, resolved: &Path, kind: Kind) -> Result<bool> {
     let root = match kind { Kind::Codex => &paths.codex_root, Kind::Claude => &paths.claude_root };
     let real_root = fs::canonicalize(root)
         .map_err(|e| format!("受管目录不可用 {}：{e}", root.display()))?;
+    Ok(resolved.parent() == Some(real_root.as_path()))
+}
+
+pub fn managed_path(paths: &Paths, path: &Path, kind: Kind) -> Result<PathBuf> {
+    let resolved = normalized(path)?;
     let name = resolved.file_name().and_then(|n| n.to_str()).ok_or("配置文件名无效。")?;
-    let valid_name = match kind {
-        Kind::Codex => name.starts_with("config.") && name.ends_with(".toml") && name.len() > 12,
-        Kind::Claude => name.starts_with("settings.") && name.ends_with(".json")
-            && name != "settings.local.json" && name.len() > 14,
-    };
-    if resolved.parent() != Some(real_root.as_path()) || !valid_name {
+    if !in_root(paths, &resolved, kind)? || suffix(kind, name).is_none()
+        || (kind == Kind::Claude && name.eq_ignore_ascii_case("settings.local.json")) {
         return Err("配置不在允许的别名配置目录内，或属于默认/本地配置，已禁止管理。".into());
     }
     Ok(resolved)
 }
 
+// 仅允许处理升级前已落盘的恢复日志，避免未完成事务锁住面板。
+pub(crate) fn is_retired_recovery_path(paths: &Paths, path: &Path) -> bool {
+    path.file_name().and_then(|name| name.to_str()).is_some_and(|name| {
+        name.strip_prefix("confignew.").and_then(|name| name.strip_suffix(".toml"))
+            .is_some_and(|name| !name.is_empty())
+    }) && normalized(path).is_ok_and(|resolved| resolved == path)
+        && in_root(paths, path, Kind::Codex).unwrap_or(false)
+}
+
 pub fn inventory(paths: &Paths, ast: &AstResult, state: &PanelState) -> Inventory {
     let mut groups: BTreeMap<String, ConfigEntry> = BTreeMap::new();
-    let mut warnings = ast.warnings.clone();
-    warnings.extend(ast.errors.clone());
+    let warnings = ast.warnings.iter().chain(&ast.errors).cloned().map(InventoryWarning::new).collect();
     let mut identities: BTreeMap<String, String> = BTreeMap::new();
     let mut hard_links = Vec::new();
     let mut sources: Vec<(String, String, Kind)> = ast.aliases.iter()
@@ -63,7 +86,7 @@ pub fn inventory(paths: &Paths, ast: &AstResult, state: &PanelState) -> Inventor
         if entry.kind != kind {
             entry.error = Some("同一文件被不同应用类型引用，已禁止修改。".into());
         }
-        // 新旧 Codex 入口经常共用文件，同一轮清单只读取并计算一次文件哈希。
+        // 同一轮清单中，指向相同文件的入口共用一次文件读取。
         if entry.error.is_none() && entry.hash.is_none() {
             match files::read(&path) {
                 Ok(Some((bytes, identity))) => {
@@ -74,7 +97,7 @@ pub fn inventory(paths: &Paths, ast: &AstResult, state: &PanelState) -> Inventor
                         }
                     }
                 }
-                Ok(None) => entry.error = Some("配置源文件不存在；可移除失效别名，但不会自动创建猜测内容。".into()),
+                Ok(None) => entry.error = Some("配置源文件不存在。".into()),
                 Err(e) => entry.error = Some(e),
             }
         }

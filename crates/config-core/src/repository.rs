@@ -86,10 +86,15 @@ impl Store {
         else { history_store::list(&self.connection, current) }
     }
 
+    pub(crate) fn historical_config_paths(&self) -> Result<Vec<String>> {
+        if self.legacy { return Ok(Vec::new()); }
+        history_store::config_paths(&self.connection)
+    }
+
     pub fn backup(&self, directory: &Path, id: &str) -> Result<ApplyPlan> {
         if self.legacy { return journal::backup(directory, id); }
         match history_store::read(&self.connection, id)? {
-            Some(plan) => {
+            Some((plan, _)) => {
                 if !self.current_operation(id)? {
                     return Err("只能撤销当前业务状态对应的最近操作，禁止恢复旧记录覆盖后续修改。".into());
                 }
@@ -111,19 +116,22 @@ impl Store {
         Ok(head.as_deref() == Some(id))
     }
 
-    pub fn committed(&self, plan: &ApplyPlan) -> Result<bool> {
+    pub fn committed(&self, plan: &ApplyPlan, manifest: Option<&[u8]>) -> Result<bool> {
         if !self.connection.is_autocommit() {
             return Err("数据库事务尚未结束，无法确认持久化提交，已停止自动恢复。".into());
         }
         let saved = history_store::read(&self.connection, &plan.id)?;
-        let Some(saved) = saved else {
+        let Some((saved, digest)) = saved else {
             if self.current_operation(&plan.id)? {
                 return Err("提交标记存在但历史正文缺失，保留恢复证据并停止写入。".into());
             }
             return Ok(false);
         };
-        if !self.current_operation(&plan.id)?
-            || history_store::encode(&saved)? != history_store::encode(plan)?
+        // 恢复和提交校验原始日志摘要，避免反序列化忽略停用字段后误判两份日志相同。
+        let same_record = if let Some(manifest) = manifest {
+            files::hash(manifest) == digest
+        } else { history_store::encode(&saved)? == history_store::encode(plan)? };
+        if !self.current_operation(&plan.id)? || !same_record
             || !state::same_business(&self.load()?, &plan.after_state)? {
             return Err("操作编号、提交正文或当前业务状态冲突，禁止猜测恢复。".into());
         }
@@ -146,7 +154,7 @@ impl Store {
         if self.legacy || plan.format_version != 2 {
             return Err("存储版本不支持此提交，请先完成旧操作恢复。".into());
         }
-        if self.committed(plan)? { return Ok(()); }
+        if self.committed(plan, Some(bytes))? { return Ok(()); }
         let transaction = self.connection.transaction().map_err(|e| e.to_string())?;
         ensure_expected(&load_current(&transaction)?, &plan.before_state)?;
         let body = serde_json::to_string(&state::business(&plan.after_state)).map_err(|e| e.to_string())?;

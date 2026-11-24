@@ -27,6 +27,7 @@ function usePreferencesState() {
   const [palette, setPalette] = useState<Palette>(initialPalette);
   const [language, setLanguage] = useState<Language>(() => read("language") === "en" ? "en" : "zh");
   const [zoom, setZoom] = useState(() => clampZoom(Number(read("zoom") ?? 1)));
+  const [autoSortConfigs, setAutoSortConfigs] = useState(() => read("auto-sort-configs") === "true");
   const [storageError, setStorageError] = useState(false);
   useLayoutEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -35,12 +36,14 @@ function usePreferencesState() {
   }, [theme, palette, language]);
   useEffect(() => {
     try {
-      for (const [key, value] of Object.entries({ theme, palette, language, zoom: String(zoom) })) {
+      for (const [key, value] of Object.entries({
+        theme, palette, language, zoom: String(zoom), "auto-sort-configs": String(autoSortConfigs),
+      })) {
         localStorage.setItem(prefix + key, value);
       }
       setStorageError(false);
     } catch (error) { console.error("保存偏好失败：", error); setStorageError(true); }
-  }, [theme, palette, language, zoom]);
+  }, [theme, palette, language, zoom, autoSortConfigs]);
   useEffect(() => {
     // 与 Prompt Note 一致，普通滚轮继续滚动；拦截 Ctrl+滚轮以避免双重缩放。
     const wheel = (event: WheelEvent) => {
@@ -53,6 +56,7 @@ function usePreferencesState() {
   }, []);
   const t = useMemo(() => translator(language), [language]);
   return { theme, palette, setPalette, language, setLanguage, zoom, setZoom, storageError, t,
+    autoSortConfigs, setAutoSortConfigs,
     toggle: () => setTheme((current) => current === "dark" ? "light" : "dark") };
 }
 

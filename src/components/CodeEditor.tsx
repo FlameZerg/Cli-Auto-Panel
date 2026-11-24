@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef } from "react";
 import { EditorView, type ViewUpdate } from "@codemirror/view";
 import { Compartment, EditorState, type Extension } from "@codemirror/state";
 import { useTheme } from "../theme";
@@ -68,7 +68,8 @@ export function CodeEditor({ value, kind, onChange, readOnly = false, label,
   callback.current = onChange;
   initialValue.current = value;
 
-  useEffect(() => {
+  // 切换配置时在绘制前挂载新编辑器，避免显示一帧空白容器。
+  useLayoutEffect(() => {
     if (!host.current) return;
     const editor = new EditorView({
       doc: initialValue.current,

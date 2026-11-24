@@ -3,6 +3,17 @@ import type { DragEvent, MouseEvent, PointerEvent } from "react";
 import { startDragAutoScroll, type DragPointer } from "./dragAutoScroll";
 import { startPointerDrag } from "./pointerDrag";
 
+const idle = { dragging: null, over: null, after: false };
+type DragState = { dragging: string | null; over: string | null; after: boolean };
+
+function moveItem(keys: string[], from: number, to: number): string[] {
+  if (from === to || from < 0 || to < 0 || to >= keys.length) return keys;
+  const next = keys.slice();
+  const [moved] = next.splice(from, 1);
+  next.splice(to, 0, moved);
+  return next;
+}
+
 // 轻量列表拖拽排序：共用 Pointer Events 手势，不引入第三方库。
 // 交互模型：
 //   live（默认）→ 拖动中预览顺序（preview）即时重排，其他卡片通过 CSS transform 平滑让位；
@@ -16,11 +27,12 @@ export function useDragSort<T>(
   items: T[],
   keyOf: (item: T) => string,
   enabled: boolean,
-  commit: (order: string[]) => void,
-  options?: { live?: boolean },
+  commit: (order: string[], moved: string) => void,
+  options?: { live?: boolean; midpoint?: boolean },
 ) {
   const live = options?.live !== false;
-  const [render, setRender] = useState<{ dragging: string | null; over: string | null }>({ dragging: null, over: null });
+  const splitDropTarget = options?.midpoint === true;
+  const [render, setRender] = useState<DragState>(idle);
   const [frozen, setFrozen] = useState<string[] | null>(null);
   // 每个嵌套列表独占命中范围，不将组内卡片的手势识别为整组拖拽。
   const scope = useId();
@@ -29,7 +41,7 @@ export function useDragSort<T>(
   // 松手仅提交一次，事件闭包也可能跨渲染存活。
   const doneRef = useRef(true);
   // 状态镜像：事件处理器内部读取 ref，避免旧闭包覆盖最近一次悬停。
-  const latestRef = useRef<{ dragging: string | null; over: string | null }>({ dragging: null, over: null });
+  const latestRef = useRef<DragState>(idle);
   const autoScrollRef = useRef<ReturnType<typeof startDragAutoScroll>>(null);
 
   const keys = items.map(keyOf);
@@ -46,29 +58,25 @@ export function useDragSort<T>(
     return disposeGesture;
   }, [enabled]);
 
-  // 拖拽预览：以当前列表为基准，把被拖项移动到最后悬停项的位置。
-  // preview 只在渲染期间从 state 镜像推导；事件写入走 ref，再由 setRender 触发重渲染。
-  const dragging = render.dragging;
-  const over = render.over;
-  const preview = (() => {
-    if (!dragging || !over || dragging === over) return null;
+  function orderAt({ dragging, over, after }: DragState) {
+    if (!dragging || !over || dragging === over) return keys;
     const from = keys.indexOf(dragging);
     const to = keys.indexOf(over);
-    if (from < 0 || to < 0) return null;
-    const next = keys.slice();
-    const [moved] = next.splice(from, 1);
-    // 悬停语义是"插到目标之前"：源项在目标之前时，移除源项会使目标左移一位，需补偿。
-    next.splice(from < to ? to - 1 : to, 0, moved);
-    return next;
-  })();
+    if (to < 0) return keys;
+    // 卡片上下半区分别在目标前后插入，移除源项后需补偿目标下标。
+    return moveItem(keys, from, to - Number(from < to) + Number(after));
+  }
+
+  const { dragging, over, after } = render;
+  const preview = live ? orderAt(render) : keys;
 
   // 非实时模式不应用 preview：拖动中列表静止，源项保持原位，松手时按浮层指示位置一次性插入。
-  const order = (live && preview) || frozen || keys;
+  const order = preview !== keys ? preview : frozen ?? keys;
   const rank = new Map(order.map((key, index) => [key, index] as const));
   const ordered = items.slice().sort((a, b) =>
     (rank.get(keyOf(a)) ?? Number.MAX_SAFE_INTEGER) - (rank.get(keyOf(b)) ?? Number.MAX_SAFE_INTEGER));
 
-  function sync(next: { dragging: string | null; over: string | null }) {
+  function sync(next: DragState) {
     latestRef.current = next;
     setRender(next);
   }
@@ -76,7 +84,7 @@ export function useDragSort<T>(
   function reset() {
     disposeGesture();
     doneRef.current = true;
-    sync({ dragging: null, over: null });
+    sync(idle);
   }
 
   function disposeGesture() {
@@ -99,22 +107,21 @@ export function useDragSort<T>(
     if (!current.dragging) return;
     if (doneRef.current) return;
     doneRef.current = true;
-    const overKey = current.over ?? current.dragging;
-    const from = keys.indexOf(current.dragging);
-    const to = keys.indexOf(overKey);
-    let finalOrder = keys;
-    if (from >= 0 && to >= 0 && from !== to) {
-      finalOrder = keys.slice();
-      const [moved] = finalOrder.splice(from, 1);
-      // 与 preview 同一悬停语义："插到目标之前"；向下拖需补偿移除源项造成的左移一位。
-      finalOrder.splice(from < to ? to - 1 : to, 0, moved);
-    }
-    const changed = finalOrder.some((key, index) => key !== keys[index]);
     reset();
-    if (changed) {
-      setFrozen(finalOrder);
-      commit(finalOrder);
-    }
+    publish(orderAt(current), current.dragging);
+  }
+
+  function publish(order: string[], moved: string) {
+    if (order === keys) return false;
+    setFrozen(order);
+    commit(order, moved);
+    return true;
+  }
+
+  function moveBy(key: string, direction: number) {
+    if (!enabled || frozen || gestureRef.current) return false;
+    const index = keys.indexOf(key);
+    return publish(moveItem(keys, index, index + direction), key);
   }
 
   function card(key: string, onClick?: (event: MouseEvent) => void,
@@ -138,13 +145,13 @@ export function useDragSort<T>(
         gestureRef.current = startPointerDrag(source, event.nativeEvent, {
           start: (point) => {
             doneRef.current = false;
-            sync({ dragging: key, over: null });
+            sync({ dragging: key, over: null, after: false });
             autoScrollRef.current = startDragAutoScroll(source, point, hover);
           },
           move: (point) => { hover(point); autoScrollRef.current?.move(point); },
           drop,
           cancel: reset,
-        }, options?.ghostOf);
+        }, options?.ghostOf, splitDropTarget);
       },
       onClick: (event: MouseEvent) => {
         // 手势层统一拦截拖拽后的 click；正常点击继续通过原有业务入口。
@@ -174,9 +181,18 @@ export function useDragSort<T>(
     const list = listRef.current;
     const target = targetInList(point);
     if (!current.dragging || !list || !target) return;
-    const hit = target.closest(`[data-drag-sort-scope="${scope}"]`)?.getAttribute("data-drag-sort-key");
-    if (hit && keys.includes(hit)) {
-      if (hit !== current.dragging && current.over !== hit) sync({ ...current, over: hit });
+    const card = target.closest(`[data-drag-sort-scope="${scope}"]`);
+    const hit = card?.getAttribute("data-drag-sort-key");
+    const setTarget = (over: string | null, after = false) => {
+      if (over !== current.over || after !== current.after) sync({ ...current, over, after });
+    };
+    if (card && hit && keys.includes(hit)) {
+      if (hit !== current.dragging) {
+        const bounds = splitDropTarget ? card.getBoundingClientRect() : null;
+        setTarget(hit, !!bounds && point.y >= bounds.top + bounds.height / 2);
+      } else if (splitDropTarget) {
+        setTarget(null);
+      }
       return;
     }
     // 空白首尾落点只在真实边界生效，滚动过程中不会跳到未显示的首尾卡片。
@@ -185,11 +201,11 @@ export function useDragSort<T>(
     if (!keys.length) return;
     // 可视区边缘用于自动滚动，只有滚动已到真实首尾时才锚定列表首尾项。
     if (ratio < 0.12 && list.scrollTop <= 0) {
-      if (current.over !== keys[0]) sync({ ...current, over: keys[0] });
+      setTarget(keys[0]);
       return;
     }
     if (ratio > 0.88 && list.scrollTop + list.clientHeight >= list.scrollHeight - 1) {
-      if (current.over !== keys[keys.length - 1]) sync({ ...current, over: keys[keys.length - 1] });
+      setTarget(keys[keys.length - 1], splitDropTarget);
       return;
     }
     // 中部空隙：维持最后悬停的卡片不做跳变。
@@ -199,5 +215,7 @@ export function useDragSort<T>(
     ref: (element: HTMLElement | null) => { listRef.current = element; },
   };
 
-  return { dragging, over, ordered, card, container, cancel };
+  // 原槽位无需显示落点；整组及模板沿用已有悬停样式。
+  const marker = splitDropTarget && orderAt(render) === keys ? null : over;
+  return { dragging, over: marker, after, ordered, card, container, cancel, moveBy };
 }

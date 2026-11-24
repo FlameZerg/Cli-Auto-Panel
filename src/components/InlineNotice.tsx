@@ -1,15 +1,16 @@
 import type { ReactNode } from "react";
 
-// 提示固定单行，长内容保留在原生悬停提示中，不覆盖配置编辑区。
+// 保留诊断原有换行，多条提示逐项展示。
 export function InlineNotice({ messages, tone = "notice", actions }: {
   messages: (string | null | undefined)[];
   tone?: "notice" | "error" | "success";
   actions?: ReactNode;
 }) {
-  const text = [...new Set(messages.filter((message): message is string => !!message))]
-    .join("；").replace(/\s+/g, " ");
-  if (!text) return null;
+  const items = [...new Set(messages.map((message) => message?.trim() ?? "").filter(Boolean))];
+  if (!items.length) return null;
   return <div className={`inline-notice inline-notice-${tone}`} role={tone === "error" ? "alert" : "status"}>
-    <span className="inline-notice-text" title={text}>{text}</span>{actions}
+    {items.length === 1 ? <span className="inline-notice-text">{items[0]}</span>
+      : <ul className="inline-notice-text">{items.map((item) => <li key={item}>{item}</li>)}</ul>}
+    {actions}
   </div>;
 }

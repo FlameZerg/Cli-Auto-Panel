@@ -1,4 +1,5 @@
 import type { Bootstrap, Change, Kind, Preview } from "../../types";
+import { configPath } from "../aliases/configNames";
 
 export interface PreviewEditor { path: string; kind: Kind }
 
@@ -12,9 +13,7 @@ export function previewEditor(data: Bootstrap, preview: Preview, change: Change 
   if (change?.type !== "saveConfig") return null;
   const entry = data.inventory.configs.find((config) => config.id === change.id);
   if (!entry) return null;
-  const separator = Math.max(entry.path.lastIndexOf("\\"), entry.path.lastIndexOf("/"));
-  const filename = entry.kind === "codex" ? `config.${change.name}.toml` : `settings.${change.name}.json`;
-  const path = entry.path.slice(0, separator + 1) + filename;
+  const path = configPath(entry, change.name);
   const normalize = (value: string) => value.replace(/\//g, "\\").toLowerCase();
   const file = preview.files.find((file) => file.action !== "真实删除" && normalize(file.path) === normalize(path));
   return file ? { path: file.path, kind: entry.kind } : null;

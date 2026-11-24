@@ -40,7 +40,7 @@ async fn preview_merge(
 }
 
 #[tauri::command]
-async fn prepare_change(app: tauri::AppHandle, request: ChangeRequest) -> std::result::Result<Preview, String> {
+async fn prepare_change(app: tauri::AppHandle, request: ChangeRequest) -> std::result::Result<Preparation, String> {
     access(app, move |engine| engine.prepare(request)).await
 }
 

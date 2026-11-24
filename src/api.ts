@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { Bootstrap, Change, CommitOutcome, Document, Kind, LayoutOutcome, MergePriority, Preview } from "./types";
+import type { Bootstrap, Change, CommitOutcome, Document, Kind, LayoutOutcome, MergePriority, Preparation } from "./types";
 
 let pendingBootstrap: Promise<Bootstrap> | null = null;
 function bootstrap(): Promise<Bootstrap> {
@@ -28,7 +28,7 @@ export const api = {
     configId: string | null = null) =>
     invoke<string>("preview_merge", { kind, content, template, configId, mergePriority }),
   prepare: (expectedRevision: number, change: Change, expectedLayoutRevision: number) =>
-    invoke<Preview>("prepare_change", { request: { expectedRevision, expectedLayoutRevision, change } }),
+    invoke<Preparation>("prepare_change", { request: { expectedRevision, expectedLayoutRevision, change } }),
   // 布局直接保存到小份数据库状态，不生成配置备份或占用预览计划。
   updateLayout: (expectedRevision: number, expectedLayoutRevision: number, change: Change) =>
     write<LayoutOutcome>("update_layout", { request: { expectedRevision, expectedLayoutRevision, change } }),

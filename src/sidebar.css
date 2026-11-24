@@ -45,7 +45,6 @@ input::placeholder { color: var(--color-secondary); opacity: 1; }
 .palette-name svg { visibility: hidden; color: var(--color-primary); }
 .palette-choice.selected .palette-name svg { visibility: visible; }
 ::selection { background: var(--color-highlight); color: var(--ink-900); }
-* { scrollbar-width: thin; scrollbar-color: var(--color-highlight) transparent; }
 input, .cm-content { caret-color: var(--color-primary); }
 @container app (max-width: 1050px) {
   .sidebar { width: 210px; padding: 24px 14px 16px; }

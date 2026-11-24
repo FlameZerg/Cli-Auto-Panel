@@ -138,15 +138,15 @@ pub fn remove(text: &str, ast: &AstResult, aliases: &[Alias]) -> Result<String> 
 }
 
 // 复用已校验的静态注册生成逻辑，所有共享入口只替换后缀并保留启动器类型。
-pub fn rename(
-    text: &str, ast: &AstResult, aliases: &[Alias], path: &str, name: &str,
+pub fn relocate(
+    text: &str, ast: &AstResult, aliases: &[Alias], name: &str, target: &str,
 ) -> Result<String> {
     if aliases.is_empty() { return Ok(text.into()); }
     let mut names = std::collections::HashSet::new();
     let registrations = aliases.iter().map(|alias| {
         let (prefix, _) = alias.name.split_once('-').ok_or("命令名称缺少受支持的启动器前缀。")?;
         match (alias.kind, prefix.to_ascii_lowercase().as_str()) {
-            (Kind::Codex, "codex" | "codexnew") | (Kind::Claude, "claude") => {}
+            (Kind::Codex, "codex") | (Kind::Claude, "claude") => {}
             _ => return Err("命令启动器与配置类型不匹配，已停止重命名。".into()),
         }
         let command = format!("{prefix}-{name}");
@@ -157,7 +157,7 @@ pub fn rename(
             && !aliases.iter().any(|original| original.name == other.name)) {
             return Err(format!("目标命令已经存在，拒绝覆盖：{command}"));
         }
-        Ok((command, path.to_owned(), alias.kind))
+        Ok((command, target.to_owned(), alias.kind))
     }).collect::<Result<Vec<_>>>()?;
     let removed = remove(text, ast, aliases)?;
     let remaining = parse(&removed)?;

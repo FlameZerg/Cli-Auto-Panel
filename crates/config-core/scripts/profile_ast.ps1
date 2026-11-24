@@ -24,6 +24,7 @@ try {
     $ast = [System.Management.Automation.Language.Parser]::ParseInput(
         [string]$request.text, [ref]$tokens, [ref]$parseErrors)
     $aliases = [System.Collections.Generic.List[object]]::new()
+    $unmanagedPaths = [System.Collections.Generic.List[string]]::new()
     $warnings = [System.Collections.Generic.List[string]]::new()
     $errors = @($parseErrors | ForEach-Object { "第 $($_.Extent.StartLineNumber) 行 PowerShell 语法错误。" })
     $nodes = $ast.FindAll({
@@ -63,13 +64,16 @@ try {
                 $pipeline.Parent -is [System.Management.Automation.Language.NamedBlockAst] -and $pipeline.Parent.Parent -eq $ast
             if (-not $topLevel -or $elements.Count -ne 3 -or
                 $elements[1] -isnot [System.Management.Automation.Language.StringConstantExpressionAst] -or
-                $elements[2] -isnot [System.Management.Automation.Language.StringConstantExpressionAst] -or
-                # \w 在 PowerShell 正则中是 Unicode 语义，放行中文别名；结构异常时携带精确位置。
-                $elements[1].Value -notmatch '^(codex|codexnew)-[\w.-]+$') {
+                $elements[2] -isnot [System.Management.Automation.Language.StringConstantExpressionAst]) {
                 $where = if ($node.Extent.StartLineNumber -gt 0) {
                     "profile 第 $($node.Extent.StartLineNumber) 行：$($node.Extent.Text)"
                 } else { $node.Extent.Text }
                 $warnings.Add("存在动态或不支持的 Codex 注册，自动修改 profile 已禁用。位置：$where")
+                continue
+            }
+            # 其他静态注册不进入清单，但保留文件引用供删除和改名检查。
+            if ($elements[1].Value -notmatch '^codex-[\w.-]+$') {
+                $unmanagedPaths.Add($elements[2].Value)
                 continue
             }
             $aliases.Add(@{ name = $elements[1].Value; path = $elements[2].Value; kind = 'codex'
@@ -80,7 +84,8 @@ try {
         $warnings.Add("存在重复别名 $($group.Name)，自动修改 profile 已禁用。")
     }
     $panelStage = 'serialize_result'
-    $result = @{ aliases = @($aliases.ToArray()); warnings = @($warnings.ToArray()); errors = @($errors) }
+    $result = @{ aliases = @($aliases.ToArray()); unmanagedPaths = @($unmanagedPaths.ToArray())
+        warnings = @($warnings.ToArray()); errors = @($errors) }
     $panelWriter.WriteLine((ConvertTo-Json -InputObject $result -Depth 12 -Compress))
 } catch {
     # 保留完整错误正文和脚本堆栈，便于直接定位实际失败原因。

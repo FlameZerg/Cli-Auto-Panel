@@ -1,4 +1,5 @@
 mod alias_service;
+mod binding_recovery;
 mod compatibility;
 mod config_groups;
 mod discovery;
@@ -6,7 +7,6 @@ mod files;
 mod journal;
 mod history_store;
 mod layout;
-mod launcher_service;
 mod merge_json;
 mod merge_policy;
 mod merge_toml;
@@ -20,12 +20,20 @@ mod state;
 mod storage_schema;
 
 use model::*;
-use std::{collections::HashSet, path::{Path, PathBuf}};
+use std::{collections::HashMap, path::{Path, PathBuf}};
+
+struct ReadTarget {
+    path: PathBuf,
+    kind: Kind,
+    error: Option<String>,
+}
 
 pub struct Engine {
     paths: Paths,
     store: repository::Store,
     ast_cache: Option<(String, AstResult)>,
+    historical_paths: Option<(u64, Vec<String>)>,
+    read_targets: HashMap<String, ReadTarget>,
     preview: Option<ApplyPlan>,
 }
 
@@ -52,7 +60,7 @@ impl Engine {
             data: local.join("CliAutoPanel"),
         };
         let store = repository::Store::open(&paths.data)?;
-        Ok(Self { paths, store, ast_cache: None, preview: None })
+        Ok(Self { paths, store, ast_cache: None, historical_paths: None, read_targets: HashMap::new(), preview: None })
     }
 
     fn ast(&mut self) -> Result<(String, AstResult)> {
@@ -66,40 +74,59 @@ impl Engine {
         Ok((hash, ast))
     }
 
+    fn describe_orphaned_bindings(
+        &mut self, state: &PanelState, ast: &AstResult, inventory: &Inventory,
+    ) -> (Vec<OrphanedBinding>, Option<String>) {
+        let mut bindings = binding_recovery::orphaned(&self.paths, state, ast, inventory);
+        if bindings.iter().all(|binding| binding.filename.is_some()) { return (bindings, None); }
+        // 仅在当前资料无法识别文件时读取备份路径，同一业务版本内复用结果。
+        if !self.historical_paths.as_ref().is_some_and(|(revision, _)| *revision == state.revision) {
+            match self.store.historical_config_paths() {
+                Ok(paths) => self.historical_paths = Some((state.revision, paths)),
+                Err(error) => return (bindings, Some(error)),
+            }
+        }
+        if let Some((_, paths)) = &self.historical_paths {
+            binding_recovery::fill_from_history(&mut bindings, paths);
+        }
+        (bindings, None)
+    }
+
     pub fn bootstrap(&mut self) -> Result<Bootstrap> {
+        self.read_targets.clear();
         let state = self.store.load()?;
         let ast = match self.ast() {
             Ok((_, ast)) => ast,
             Err(error) => AstResult { warnings: vec![error], ..AstResult::default() },
         };
         let mut inventory = discovery::inventory(&self.paths, &ast, &state);
-        // 一次建立文件索引，绑定检查不再为每个条目重扫完整清单。
-        let config_ids: HashSet<&str> = inventory.configs.iter().map(|config| config.id.as_str()).collect();
-        for binding in &state.bindings {
-            if !config_ids.contains(binding.config_id.as_str()) {
-                inventory.warnings.push(format!("存在失去入口的绑定 {}，重新导入原文件后才能同步。", binding.config_id));
-            }
-        }
-        Ok(Bootstrap {
+        let (orphaned_bindings, history_warning) = self.describe_orphaned_bindings(&state, &ast, &inventory);
+        if let Some(warning) = history_warning { inventory.warnings.push(InventoryWarning::new(warning)); }
+        let read_targets: HashMap<_, _> = inventory.configs.iter()
+            .map(|config| (config.id.clone(), ReadTarget {
+                path: PathBuf::from(&config.path), kind: config.kind, error: config.error.clone(),
+            })).collect();
+        let snapshot = Bootstrap {
             history: self.store.history(&self.paths.data, &state)?,
             history_error: None,
-            state, inventory,
+            state, inventory, orphaned_bindings,
             profile_path: self.paths.profile.to_string_lossy().into(),
             // 界面提示与后端路径校验共用同一目录来源，避免前端猜测用户路径。
             codex_root: self.paths.codex_root.to_string_lossy().into(),
             claude_root: self.paths.claude_root.to_string_lossy().into(),
             data_path: self.paths.data.to_string_lossy().into(),
             pending_recovery: journal::pending(&self.paths.data)? || self.store.is_legacy(),
-        })
+        };
+        self.read_targets = read_targets;
+        Ok(snapshot)
     }
 
-    pub fn read_config(&mut self, id: &str) -> Result<Document> {
-        let state = self.store.load()?;
-        let (_, ast) = self.ast()?;
-        let inventory = discovery::inventory(&self.paths, &ast, &state);
-        let entry = inventory.configs.iter().find(|c| c.id == id).ok_or("文件不在受管清单中。")?;
+    pub fn read_config(&self, id: &str) -> Result<Document> {
+        // 清单只缓存受管身份；每次打开重读目标正文和哈希，写入前仍独立重扫校验。
+        let entry = self.read_targets.get(id).ok_or("文件不在受管清单中，请刷新清单。")?;
         if let Some(error) = &entry.error { return Err(error.clone()); }
-        let path = discovery::managed_path(&self.paths, Path::new(&entry.path), entry.kind)?;
+        let path = discovery::managed_path(&self.paths, &entry.path, entry.kind)?;
+        if path != entry.path { return Err("配置路径已变化，请刷新清单。".into()); }
         let (bytes, _) = files::read(&path)?.ok_or("配置文件不存在。")?;
         let content = files::Text::decode(&bytes, false)?.value;
         let hash = files::hash(&bytes);
@@ -125,7 +152,7 @@ impl Engine {
         planner::merge_config(kind, content, binding, template, merge_priority).map(|(output, _)| output)
     }
 
-    pub fn prepare(&mut self, request: ChangeRequest) -> Result<Preview> {
+    pub fn prepare(&mut self, request: ChangeRequest) -> Result<Preparation> {
         self.preview = None;
         if journal::pending(&self.paths.data)? || self.store.is_legacy() {
             return Err("必须先恢复未完成操作并完成存储迁移，再创建新的修改计划。".into());
@@ -134,10 +161,10 @@ impl Engine {
         let state = self.store.load()?;
         let backup = if let Change::RestoreBackup { id } = &request.change {
             let backup = self.store.backup(&self.paths.data, id)?;
-            self.validate_plan_paths(&backup)?;
+            self.validate_plan_paths(&backup, false)?;
             Some(backup)
         } else { None };
-        // 删除模板及恢复不依赖配置清单；模板保存始终扫描并同步全部绑定。
+        // 删除模板及恢复不依赖配置清单。
         let metadata_only = matches!(&request.change,
             Change::DeleteTemplate { .. } | Change::RestoreBackup { .. });
         let (profile_hash, ast, inventory) = if metadata_only {
@@ -147,8 +174,18 @@ impl Engine {
             let inventory = discovery::inventory(&self.paths, &ast, &state);
             (hash, ast, inventory)
         };
-        let plan = planner::prepare(&self.paths, state, &inventory, &ast, &profile_hash, request, backup.as_ref())?;
-        self.validate_plan_paths(&plan)?;
+        let (orphaned, history_warning) = match &request.change {
+            Change::SaveTemplate { id: Some(_), .. } | Change::RemoveOrphanedBinding { .. } =>
+                self.describe_orphaned_bindings(&state, &ast, &inventory),
+            _ => (Vec::new(), None),
+        };
+        let mut plan = planner::prepare(&self.paths, state, &inventory, &ast, &profile_hash, request,
+            backup.as_ref(), &orphaned)?;
+        if let Some(warning) = history_warning { plan.notices.push(warning); }
+        if planner::unchanged(&plan)? {
+            return Ok(Preparation::Unchanged { notices: plan.notices });
+        }
+        self.validate_plan_paths(&plan, false)?;
         if let Some(backup) = backup.as_ref().filter(|backup| backup.format_version == 2) {
             for change in backup.files.iter().filter(|change| change.before.is_none() && change.after.is_some()) {
                 let expected = self.store.created_identity(&backup.id, &change.path)?;
@@ -163,7 +200,7 @@ impl Engine {
         // 差异生成失败时不保留可提交计划，避免失败请求遗留有效写入入口。
         let preview = self.preview(&plan)?;
         self.preview = Some(plan);
-        Ok(preview)
+        Ok(Preparation::Ready(preview))
     }
 
     pub fn update_layout(&mut self, request: ChangeRequest) -> Result<LayoutOutcome> {
@@ -233,10 +270,14 @@ impl Engine {
 
     fn preview_text(&self, encoded: &str, path: &Path) -> Result<String> {
         let bytes = files::unpack(encoded)?;
-        Ok(files::Text::decode(&bytes, path == self.paths.profile)?.value)
+        // 编辑仍需合法编码，删除与恢复可用备份中的原始字节。
+        Ok(match files::Text::decode(&bytes, path == self.paths.profile) {
+            Ok(text) => text.value,
+            Err(error) => format!("无法预览正文（{} 字节）：{error}", bytes.len()),
+        })
     }
 
-    fn validate_plan_paths(&self, plan: &ApplyPlan) -> Result<()> {
+    fn validate_plan_paths(&self, plan: &ApplyPlan, recovering: bool) -> Result<()> {
         if !matches!(plan.format_version, 1 | 2) {
             return Err("不支持此恢复记录版本，禁止写入。".into());
         }
@@ -257,7 +298,7 @@ impl Engine {
                 .is_ok_and(|resolved| resolved == change.path);
             let claude = discovery::managed_path(&self.paths, &change.path, Kind::Claude)
                 .is_ok_and(|resolved| resolved == change.path);
-            if !codex && !claude {
+            if !codex && !claude && !(recovering && discovery::is_retired_recovery_path(&self.paths, &change.path)) {
                 return Err("操作计划含有范围外文件，已禁止提交。".into());
             }
         }
@@ -270,7 +311,9 @@ impl Engine {
                 discovery::managed_path(&self.paths, &guard.path, kind)
                     .is_ok_and(|resolved| resolved == guard.path)
             });
-            if !allowed { return Err("恢复记录包含范围外的只读依赖。".into()); }
+            if !allowed && !(recovering && discovery::is_retired_recovery_path(&self.paths, &guard.path)) {
+                return Err("恢复记录包含范围外的只读依赖。".into());
+            }
         }
         Ok(())
     }
@@ -281,7 +324,7 @@ impl Engine {
             // 响应丢失后的同编号重试只返回提交凭据，不重复改写配置或增加版本。
             if self.store.current_operation(id)? {
                 let saved = self.store.backup(&self.paths.data, id)?;
-                if !self.store.committed(&saved)? { return Err("提交凭据不完整，禁止重复操作。".into()); }
+                if !self.store.committed(&saved, None)? { return Err("提交凭据不完整，禁止重复操作。".into()); }
                 let warnings = if journal::pending(&self.paths.data)? {
                     vec!["操作已提交，仍有恢复日志待清理，请使用恢复入口。".into()]
                 } else { Vec::new() };
@@ -290,7 +333,8 @@ impl Engine {
             return Err("没有对应的可提交计划；请刷新确认真实状态，勿重复执行未知结果的操作。".into());
         }
         let plan = self.preview.take().ok_or("操作计划已失效。")?;
-        self.validate_plan_paths(&plan)?;
+        self.validate_plan_paths(&plan, false)?;
+        self.read_targets.clear();
         let warning = journal::commit(&self.paths.data, &mut self.store, &plan)?;
         self.ast_cache = None;
         Ok(self.commit_outcome(id, warning.into_iter().collect()))
@@ -306,13 +350,15 @@ impl Engine {
 
     pub fn recover(&mut self) -> Result<Bootstrap> {
         self.preview = None;
+        self.read_targets.clear();
         if journal::pending(&self.paths.data)? {
-            let plan = journal::pending_plan(&self.paths.data)?;
-            self.validate_plan_paths(&plan)?;
-            journal::recover(&self.paths.data, &mut self.store)?;
+            let (plan, manifest) = journal::pending_plan(&self.paths.data)?;
+            self.validate_plan_paths(&plan, true)?;
+            journal::recover(&self.paths.data, &mut self.store, &plan, &manifest)?;
         }
         self.store.migrate_if_ready(&self.paths.data)?;
         self.ast_cache = None;
+        self.historical_paths = None;
         self.bootstrap()
     }
 }

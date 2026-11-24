@@ -1,18 +1,19 @@
 import { useState } from "react";
 import { ConfigGroupDialog, type GroupAction } from "./ConfigGroupDialog";
 import { ConfigGroupSection } from "./ConfigGroupSection";
+import { configMatches } from "./configNames";
 import { useDragSort } from "../drag/useDragSort";
 import type { Bootstrap, ConfigEntry, ConfigGroupChange, Kind } from "../../types";
 import { useI18n } from "../../theme";
 
 // 搜索仅影响展示，不改变归组；完整配置顺序继续交给既有状态库维护。
-export function ConfigGroups({ data, kind, configs, search, selected, disabled, saving, error,
+export function ConfigGroups({ data, kind, configs, search, selected, disabled, autoSort, saving, error,
   onSelect, onChange, onReorder, onReorderGroups }: {
   data: Bootstrap; kind: Kind; configs: ConfigEntry[]; search: string;
-  selected: string | null; disabled: boolean; saving: boolean; error: string;
+  selected: string | null; disabled: boolean; autoSort: boolean; saving: boolean; error: string;
   onSelect: (config: ConfigEntry) => void;
   onChange: (change: ConfigGroupChange, onSaved?: () => void) => void;
-  onReorder: (order: string[], cancel: () => void) => void;
+  onReorder: (order: string[], cancel: () => void, message: string) => void;
   onReorderGroups: (order: string[], cancel: () => void) => void;
 }) {
   const { t } = useI18n();
@@ -24,9 +25,7 @@ export function ConfigGroups({ data, kind, configs, search, selected, disabled, 
   // live=false：拖动中列表保持静止，仅由分组头浮层与落点指示线表达插入位置，松手一次性插入。
   const drag = useDragSort(groups, (group) => group.id, !disabled && !query && groups.length > 1,
     (order) => onReorderGroups(order, drag.cancel), { live: false });
-  const matches = (config: ConfigEntry) =>
-    `${config.aliases.join(" ")} ${config.path}`.toLowerCase().includes(query);
-  const visible = configs.filter(matches);
+  const visible = configs.filter((config) => configMatches(config, query));
   const sections = [
     ...drag.ordered.map((group) => ({ key: group.id, group, configs: visible.filter((config) => membership.get(config.id) === group.id) })),
     { key: "ungrouped", group: null, configs: visible.filter((config) => !membership.has(config.id)) },
@@ -40,7 +39,7 @@ export function ConfigGroups({ data, kind, configs, search, selected, disabled, 
     <div className="config-list" {...drag.container}>
       {sections.map(({ key, group, configs: members }) => <ConfigGroupSection key={key}
         group={group} configs={members} allConfigs={configs} groups={groups} data={data}
-        selected={selected} disabled={disabled} searching={!!query} onSelect={onSelect}
+        selected={selected} disabled={disabled} autoSort={autoSort} onSelect={onSelect}
         groupCard={group ? drag.card(group.id, undefined,
           // 拖动整组时浮层只显示分组头，避免大容器半透明块遮挡落点指示。
           { ghostOf: (section) => section.querySelector<HTMLElement>(".config-group-heading") }) : undefined}

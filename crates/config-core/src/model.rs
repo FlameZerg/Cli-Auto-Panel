@@ -37,6 +37,9 @@ pub struct Template {
 #[serde(rename_all = "camelCase")]
 pub struct Binding {
     pub config_id: String,
+    // 新绑定保存文件路径，入口消失后仍能显示文件名；旧记录缺省时按已有路径查找。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config_path: Option<String>,
     pub template_id: String,
     // 省略默认值，保持旧数据库及历史备份的序列化结果不变。
     #[serde(default, skip_serializing_if = "MergePriority::is_current")]
@@ -103,6 +106,8 @@ pub struct Alias {
 #[derive(Clone, Default, Deserialize, Serialize)]
 pub struct AstResult {
     pub aliases: Vec<Alias>,
+    #[serde(default, rename = "unmanagedPaths")]
+    pub unmanaged_paths: Vec<String>,
     pub warnings: Vec<String>,
     pub errors: Vec<String>,
 }
@@ -120,9 +125,30 @@ pub struct ConfigEntry {
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct OrphanedBinding {
+    pub config_id: String,
+    pub template_id: String,
+    pub filename: Option<String>,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Inventory {
     pub configs: Vec<ConfigEntry>,
-    pub warnings: Vec<String>,
+    pub warnings: Vec<InventoryWarning>,
+}
+
+#[derive(Clone, Serialize)]
+pub struct InventoryWarning {
+    pub id: String,
+    pub message: String,
+}
+
+impl InventoryWarning {
+    pub(crate) fn new(message: String) -> Self {
+        // 界面仅持久化关闭标识，避免重复保存诊断原文。
+        Self { id: crate::files::hash(message.as_bytes()), message }
+    }
 }
 
 #[derive(Clone)]
@@ -157,7 +183,6 @@ pub enum Change {
     },
     CreateAlias {
         kind: Kind,
-        launcher: String,
         name: String,
         content: String,
         template_id: Option<String>,
@@ -165,9 +190,9 @@ pub enum Change {
         merge_priority: MergePriority,
     },
     RemoveAlias { name: String },
-    // 切换启动器独立提交，不连带保存当前编辑器草稿。
-    SetCodexLauncher { id: String, launcher: String, expected_hash: String },
     DeleteConfig { id: String, expected_hash: String },
+    ForgetConfig { id: String },
+    RemoveOrphanedBinding { config_id: String, template_id: String },
     ImportConfig { path: String, kind: Kind },
     RestoreBackup { id: String },
     // 应用拖拽排序：一份模板显示顺序、一份别名配置显示顺序，均为全量 id 列表。
@@ -261,6 +286,13 @@ pub struct Preview {
 }
 
 #[derive(Serialize)]
+#[serde(untagged)]
+pub enum Preparation {
+    Ready(Preview),
+    Unchanged { notices: Vec<String> },
+}
+
+#[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HistoryEntry {
     pub id: String,
@@ -296,6 +328,7 @@ pub struct LayoutOutcome {
 pub struct Bootstrap {
     pub state: PanelState,
     pub inventory: Inventory,
+    pub orphaned_bindings: Vec<OrphanedBinding>,
     pub history: Vec<HistoryEntry>,
     pub history_error: Option<String>,
     pub profile_path: String,

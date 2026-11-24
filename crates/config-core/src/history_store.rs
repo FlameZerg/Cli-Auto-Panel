@@ -14,7 +14,7 @@ pub(crate) fn encode(plan: &ApplyPlan) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
-pub(crate) fn read(connection: &Connection, id: &str) -> Result<Option<ApplyPlan>> {
+pub(crate) fn read(connection: &Connection, id: &str) -> Result<Option<(ApplyPlan, String)>> {
     uuid::Uuid::parse_str(id).map_err(|_| "备份编号无效。")?;
     let entry: Option<(Option<Vec<u8>>, String)> = connection.query_row(
         "SELECT CASE WHEN length(body)<=?2 THEN body ELSE NULL END,digest
@@ -30,7 +30,7 @@ pub(crate) fn read(connection: &Connection, id: &str) -> Result<Option<ApplyPlan
     if plan.id != id || plan.format_version != 2 {
         return Err("备份编号或格式版本不一致，禁止恢复。".into());
     }
-    Ok(Some(plan))
+    Ok(Some((plan, digest)))
 }
 
 pub(crate) fn insert(
@@ -74,6 +74,20 @@ pub(crate) fn created_identity(connection: &Connection, operation: &str, path: &
         return Err("新文件归属凭据缺失或重复，禁止自动删除。".into());
     }
     Ok(matches[0].identity.clone())
+}
+
+pub(crate) fn config_paths(connection: &Connection) -> Result<Vec<String>> {
+    // 仅投影历史中的路径字符串，配置正文不返回给面板。
+    let mut statement = connection.prepare(
+        "SELECT DISTINCT entry.atom
+         FROM operation_history AS history
+         CROSS JOIN json_tree(CAST(history.body AS TEXT)) AS entry
+         WHERE entry.type = 'text' AND entry.key IN ('path', 'configPath')"
+    ).map_err(|error| format!("无法查询历史配置路径：{error}"))?;
+    let rows = statement.query_map([], |row| row.get::<_, String>(0))
+        .map_err(|error| format!("无法读取历史配置路径：{error}"))?;
+    rows.collect::<std::result::Result<_, _>>()
+        .map_err(|error| format!("无法读取历史配置路径：{error}"))
 }
 
 pub(crate) fn list(connection: &Connection, state: &PanelState) -> Result<Vec<HistoryEntry>> {

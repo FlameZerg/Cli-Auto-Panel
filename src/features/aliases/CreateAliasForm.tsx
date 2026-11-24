@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { CodeEditor } from "../../components/CodeEditor";
 import { InlineNotice } from "../../components/InlineNotice";
 import { MergePrioritySelect } from "./MergePrioritySelect";
+import { configFilename } from "./configNames";
 import { useMergePreview } from "../preview/useMergePreview";
 import { api } from "../../api";
 import type { Bootstrap, Change, Kind, MergePriority } from "../../types";
@@ -19,7 +20,6 @@ interface Props {
 export function CreateAliasForm({ kind, data, disabled, onSubmit, onDirty, onError }: Props) {
   const { t } = useI18n();
   const [name, setName] = useState("");
-  const [launcher, setLauncher] = useState(kind === "codex" ? "codex" : "claude");
   const [templateId, setTemplateId] = useState("");
   // 新绑定默认采用通用字段值，后续同步仍由是否选择模板决定。
   const [mergePriority, setMergePriority] = useState<MergePriority>("template");
@@ -38,7 +38,8 @@ export function CreateAliasForm({ kind, data, disabled, onSubmit, onDirty, onErr
   const entries = data.inventory.configs.filter((c) => c.kind === kind && !c.error);
   // 路径提示使用后端实际目录，并统一末尾分隔符以兼容环境变量覆盖。
   const root = (kind === "codex" ? data.codexRoot : data.claudeRoot).replace(/[\\/]+$/, "");
-  const filename = kind === "codex" ? `config.${name.trim() || t("<名称>")}.toml` : `settings.${name.trim() || t("<名称>")}.json`;
+  const suffix = name.trim() || t("<名称>");
+  const filename = configFilename({ kind }, suffix);
   const change = (action: () => void) => { onDirty(); action(); };
   async function copySource() {
     if (!sourceId || disabled || copying) return;
@@ -60,10 +61,6 @@ export function CreateAliasForm({ kind, data, disabled, onSubmit, onDirty, onErr
       <div className="form-row">
         <label>{t("名称后缀")}<input value={name} disabled={disabled || copying} placeholder={t("支持中文、字母、数字、点、短横线、下划线")}
           onChange={(e) => change(() => setName(e.target.value))} /></label>
-        {kind === "codex" && <label>{t("启动版本")}<select value={launcher} disabled={disabled}
-          onChange={(e) => change(() => setLauncher(e.target.value))}>
-          <option value="codex">{t("仅 Codex 旧版")}</option><option value="codexnew">{t("仅 Codex 新版")}</option>
-          <option value="both">{t("旧版和新版共用文件")}</option></select></label>}
         <label>{t("通用配置")}<select value={templateId} disabled={disabled}
           onChange={(e) => change(() => setTemplateId(e.target.value))}>
           <option value="">{t("不应用")}</option>{templates.map((template) => <option key={template.id} value={template.id}>{template.name}</option>)}
@@ -87,7 +84,7 @@ export function CreateAliasForm({ kind, data, disabled, onSubmit, onDirty, onErr
         onChange={(value) => change(() => setContent(value))}
         diff={selected ? merged : undefined} />
       <button className="primary" disabled={disabled || copying || !name.trim()}
-        onClick={() => onSubmit({ type: "createAlias", kind, launcher, name: name.trim(), content,
+        onClick={() => onSubmit({ type: "createAlias", kind, name: name.trim(), content,
           templateId: templateId || null, mergePriority })}>{t("新建文件并注册别名")}</button>
     </div>
   );

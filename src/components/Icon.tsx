@@ -3,6 +3,7 @@ import type { ReactNode } from "react";
 const paths = {
   plus: <path d="M12 5v14M5 12h14" />,
   minus: <path d="M5 12h14" />,
+  sort: <path d="M7 5v14m-4-4 4 4 4-4m3-9h7m-7 5h5m-5 5h3" />,
   arrow: <path d="M7 17 17 7M7 7h10v10" />,
   // 一个配置源连接两个引用节点，表达通用配置的一对多复用关系。
   sharedConfig: <><rect x="3" y="8" width="6" height="8" rx="1.5" /><path d="M9 12h4M16 6h-3v12h3" /><circle cx="18.5" cy="6" r="2.5" /><circle cx="18.5" cy="18" r="2.5" /></>,

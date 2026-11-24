@@ -42,7 +42,7 @@ function dragFeedback(source: HTMLElement, initial: DragPointer,
 
 // 只替换手势输入：不启动原生 DnD，让滚轮在按住鼠标拖动期间仍能正常派发。
 export function startPointerDrag(source: HTMLElement, initial: PointerEvent, callbacks: DragCallbacks,
-  ghostOf?: (source: HTMLElement) => HTMLElement | null) {
+  ghostOf?: (source: HTMLElement) => HTMLElement | null, pointerAnchor = false) {
   const document = source.ownerDocument;
   const view = document.defaultView;
   if (!view) return null;
@@ -99,7 +99,7 @@ export function startPointerDrag(source: HTMLElement, initial: PointerEvent, cal
         document.addEventListener("click", suppressClick, true);
         // 捕获在稳定的根节点上，避免排序移动源卡片时丢失指针捕获。
         root.setPointerCapture(initial.pointerId);
-        callbacks.start(feedback.anchor(point));
+        callbacks.start(pointerAnchor ? point : feedback.anchor(point));
       } catch (failure) {
         // 初始化失败也清理手势与浮层，保留原始错误，不静默降级。
         cancel();
@@ -107,7 +107,7 @@ export function startPointerDrag(source: HTMLElement, initial: PointerEvent, cal
       }
     }
     feedback?.move(point);
-    callbacks.move(feedback ? feedback.anchor(point) : point);
+    callbacks.move(feedback && !pointerAnchor ? feedback.anchor(point) : point);
   };
 
   const up = (event: PointerEvent) => {
@@ -115,11 +115,10 @@ export function startPointerDrag(source: HTMLElement, initial: PointerEvent, cal
     const wasActive = active;
     if (wasActive) event.preventDefault();
     dispose();
-    if (wasActive) {
-      // dispose 仅移除浮层 DOM；anchor 是纯几何换算，落点判定仍以浮层中心为准。
-      const point = { x: event.clientX, y: event.clientY };
-      callbacks.drop(feedback ? feedback.anchor(point) : point);
-    }
+    if (!wasActive) { callbacks.cancel(); return; }
+    // 卡片按光标所在的半区落位，整组和模板保留浮层中心锚点。
+    const point = { x: event.clientX, y: event.clientY };
+    callbacks.drop(feedback && !pointerAnchor ? feedback.anchor(point) : point);
   };
 
   const cancelPointer = (event: PointerEvent) => {
